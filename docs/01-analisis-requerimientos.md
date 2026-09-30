@@ -1,6 +1,6 @@
 # Plataforma de seguimiento de movimiento de tierra — Análisis de requerimientos
 
-Versión 0.1 · 30-09-2026 · Documento de levantamiento (sin código aún)
+Versión 0.2 · 30-09-2026 · Incorpora respuestas del mandante. Esquema de base de datos en `db/schema.sql`.
 
 ## 1. Objetivo
 
@@ -11,14 +11,10 @@ Página web, accesible desde cualquier computador o celular con navegador, para 
 
 ## 2. Roles y acceso
 
-| Variable | Tipo | Nota |
-|---|---|---|
-| usuario / email | texto | único |
-| contraseña | hash | nunca se guarda en texto plano |
-| rol | `admin` \| `visita` | define permisos |
-| activo | sí/no | para quitar acceso sin borrar |
+- **Administrador**: cuenta con usuario y contraseña. Es el único que puede modificar.
+- **Visita**: acceso **libre, sin contraseña** (solo lectura). Cualquiera con el enlace puede ver.
 
-Los permisos se validan en el servidor (no basta con ocultar botones).
+Los permisos de escritura se validan en el servidor (no basta con ocultar botones).
 
 ## 3. Mapa base
 
@@ -30,91 +26,129 @@ Los permisos se validan en el servidor (no basta con ocultar botones).
 
 Sobre la imagen, el admin **dibuja un polígono** por cada elemento (una sola vez). Así la imagen se vuelve interactiva: clic en un sitio → ver su información y color según estado.
 
-## 4. Elementos de la obra
+## 4. Terrenos (elementos de la obra)
 
-Un solo catálogo de "elementos" con un tipo:
+Un solo catálogo de "terrenos" con un tipo:
 
 | Variable | Tipo | Nota |
 |---|---|---|
 | código | texto | ej. `S-01`…`S-48`, `ED-A`, `P-1`, `T-1` |
 | tipo | `sitio` \| `edificio` \| `pasaje` \| `tramo_calle` | |
 | nombre | texto | |
-| sector | texto | agrupación (ver preguntas abiertas) |
 | polígono en el mapa | lista de puntos (x,y) | dibujado por el admin |
-| volumen proyectado (m³) | número | total a retirar según proyecto |
-| volumen retirado (m³) | **calculado** | suma de los viajes de camión con ese origen |
-| % avance | **calculado** | retirado / proyectado |
-| estado | `sin intervenir` \| `en proceso` \| `listo y entregado` | lo fija el admin |
-| fecha de entrega | fecha | cuando pasa a entregado |
 | observaciones | texto | |
 
-### 4.1 Subdivisión de cada sitio (48 × 3 = 144 zonas)
+### 4.1 Actividades de movimiento de tierra (todos los terrenos)
+
+Cada terreno tiene **dos actividades**: **escarpe** y **corte** (en edificios, el corte es la excavación del **subterráneo**).
 
 | Variable | Tipo | Nota |
 |---|---|---|
-| sitio | referencia | S-01 … S-48 |
-| zona | `acceso` \| `living` \| `fondo de patio` | |
+| terreno | referencia | |
+| actividad | `escarpe` \| `corte` | |
+| volumen proyectado (m³) | número | según proyecto |
+| volumen retirado (m³) | **calculado** | ver §5.3 |
+| % avance | **calculado** | retirado / proyectado |
+| estado | `sin intervenir` \| `en proceso` \| `terminado` | |
+
+### 4.2 Entregas
+
+- **Sitio**: el terreno se divide en 3 partes y cada una se entrega por separado → **48 × 3 = 144 entregas**:
+  `acceso` (por donde se entra), `living` (donde se emplaza la casa) y `fondo de patio`.
+- **Edificio**: una sola zona → 1 entrega.
+- **Pasaje / tramo de calle**: 1 entrega (supuesto, a confirmar).
+
+| Variable | Tipo | Nota |
+|---|---|---|
+| terreno | referencia | |
+| zona | `acceso` \| `living` \| `fondo_patio` \| `unica` | |
 | polígono en el mapa | puntos (x,y) | |
-| estado | `entregado` \| `no entregado` (opcionalmente `en proceso`) | |
-| fecha de entrega | fecha | |
+| estado | `sin intervenir` \| `en proceso` \| `entregado` | |
+| fecha de entrega | fecha | se llena al pasar a entregado |
 
-## 5. Registro de camiones (salidas)
+## 5. Camiones y viajes
 
-Cada registro es **un viaje de salida** de la obra.
+### 5.1 Maestro de camiones
 
-| Variable | Tipo | Obligatorio | Nota |
-|---|---|---|---|
-| fecha | fecha | sí | |
-| hora de salida | hora | sí | zona horaria Chile |
-| patente | texto | sí | validar formato chileno (`ABCD12` / `AB1234`) |
-| cantidad (m³) | número | sí | volumen del viaje |
-| origen | elemento (y zona si es sitio) | sí | necesario para saber "de qué sitios" salió la tierra |
-| destino / botadero | texto | opcional | |
-| empresa / conductor | texto | opcional | |
-| registrado por | usuario | automático | trazabilidad |
+| Variable | Tipo | Nota |
+|---|---|---|
+| patente | texto | formato chileno |
+| id tarjeta | texto | lo que registra la máquina lectora |
+| capacidad (m³) | número | **el volumen de cada viaje = capacidad del camión** |
+| empresa | texto | opcional |
+| activo | sí/no | |
 
-Opcional: maestro de camiones (patente → empresa, capacidad nominal en m³) para autocompletar la cantidad.
-También: carga masiva desde Excel/CSV para no digitar viaje por viaje.
+### 5.2 Viajes (importados del CSV diario)
+
+La máquina lectora de tarjetas entrega un **CSV diario**. El admin lo sube y la página:
+
+1. Lee cada fila (fecha, hora de salida, tarjeta/patente).
+2. Busca el camión y asigna m³ = capacidad del camión (se guarda la capacidad del momento, por si luego cambia).
+3. Descarta filas ya importadas (no se duplican si se sube dos veces el mismo archivo).
+4. Avisa de tarjetas/patentes desconocidas para darlas de alta.
+
+| Variable | Tipo | Nota |
+|---|---|---|
+| fecha y hora de salida | fecha-hora | del CSV |
+| patente / tarjeta | texto | del CSV |
+| volumen (m³) | número | capacidad del camión |
+| terreno | referencia, **opcional** | si se sabe de dónde salió |
+| actividad | `escarpe` \| `corte`, opcional | |
+| archivo de origen | texto | trazabilidad |
+
+### 5.3 Cómo se calcula el volumen retirado por terreno
+
+```
+retirado(terreno, actividad) =
+    viajes asignados a ese terreno
+  + prorrateo de los viajes "generales" (sin terreno)
+  + ajustes manuales del admin (ej. topografía)
+```
+
+- **Viajes generales**: los viajes sin terreno se reparten **proporcionalmente** entre los terrenos.
+  Regla propuesta (a confirmar): cada día, el volumen general se reparte entre los terrenos/actividades
+  que estaban *en proceso* ese día, en proporción a su volumen proyectado. Si ninguno estaba en proceso,
+  entre todos los que no están terminados.
+- **Ajustes manuales**: terreno, actividad, fecha, m³ (+/−), motivo.
 
 ## 6. Carta Gantt (programa)
 
+Se carga desde **Excel**. Está **por zona de cada sitio**, ej.:
+*"Entrega acceso sitio 15 — semana del 15 al 20 de septiembre"*.
+
 | Variable | Tipo | Nota |
 |---|---|---|
-| tarea / actividad | texto | |
-| elemento (y zona) asociada | referencia | para pintar el mapa "programado" |
-| fecha inicio | fecha | |
-| fecha término | fecha | |
-| volumen planificado (m³) | número | opcional, para curva programado vs. real |
+| tarea | texto | texto original de la fila |
+| terreno | referencia | se reconoce del texto (ej. "sitio 15") |
+| zona o actividad | `acceso` / `living` / `fondo_patio` / `escarpe` / `corte` … | se reconoce del texto |
+| fecha inicio / término | fecha | la semana indicada |
 
-Carga: planilla Excel/CSV (o exportada desde MS Project) con esas columnas, o edición manual.
+**Estado programado a hoy** para cada entrega:
+- hoy < inicio → *sin intervenir*
+- inicio ≤ hoy ≤ término → *en proceso*
+- hoy > término → *entregado*
 
-**Estado programado a hoy** (calculado para cada elemento):
-- hoy < inicio → debería estar *sin intervenir*
-- inicio ≤ hoy ≤ término → debería estar *en proceso* (avance esperado lineal = días transcurridos / duración)
-- hoy > término → debería estar *entregado*
+Comparado con el estado real → **atrasado / al día / adelantado**.
 
-Comparando con el estado real se marca **atrasado / al día / adelantado**.
+## 7. Qué muestra el visualizador (acceso libre, sin contraseña)
 
-## 7. Qué muestra el visualizador (Visita)
+1. **Resumen del día**: N° de camiones (viajes) hoy, m³ hoy, m³ por terreno de origen (incluye "general"),
+   acumulado total vs. proyectado.
+2. **Mapa de movimiento de tierra**: terrenos coloreados por estado de escarpe/corte y % avance.
+3. **Mapa de entregas**: 48 sitios × 3 zonas + edificios/pasajes/tramos, coloreados
+   sin intervenir / en proceso / entregado.
+4. **Mapa programado (Gantt)**: cómo debería verse la obra hoy, y atrasos.
+5. **Evolución en el tiempo**: curva de m³ acumulados y entregas acumuladas, real vs. programado
+   (la página se sigue alimentando día a día y guarda el historial).
 
-1. **Resumen del día** (tarjetas):
-   - N° de camiones (viajes) hoy
-   - m³ retirados hoy
-   - Sitios/elementos de origen hoy (tabla con m³ por origen)
-   - Acumulado total vs. proyectado (%)
-2. **Mapa de estado real**: elementos coloreados por estado (sin intervenir / en proceso / entregado); clic para ver m³ proyectado, retirado y avance.
-3. **Mapa interactivo de sitios**: los 48 sitios con sus 3 zonas (acceso, living, fondo de patio) coloreadas entregado / no entregado.
-4. **Mapa programado (Gantt)**: cómo debería verse la obra hoy según la carta Gantt, y diferencias contra lo real.
-5. (Opcional) tabla de viajes filtrable por fecha, patente u origen; exportar a Excel.
-
-## 8. Qué hace el Administrador
+## 8. Qué hace el Administrador (con contraseña)
 
 - Subir / reemplazar el plano y dibujar los polígonos.
-- Crear y editar elementos, volúmenes proyectados y estados.
-- Marcar zonas de los sitios como entregadas.
-- Registrar, editar y eliminar viajes de camión (manual o por Excel).
-- Cargar / editar la carta Gantt.
-- Gestionar usuarios (crear visitas, desactivar accesos).
+- Mantener terrenos, volúmenes proyectados y estados.
+- Marcar entregas (sin intervenir / en proceso / entregado).
+- Subir el CSV diario de camiones, asignar viajes a terrenos, ajustes manuales.
+- Mantener el maestro de camiones (patente, tarjeta, capacidad).
+- Subir / reemplazar la carta Gantt en Excel.
 
 ## 9. Factibilidad
 
@@ -135,14 +169,26 @@ Volumen de datos esperado: bajo (≈200 elementos/zonas, algunos cientos de viaj
 
 Único trabajo manual relevante: **dibujar una vez los polígonos** de los 48 sitios, 144 zonas, pasajes y tramos sobre el plano (se hace con una herramienta de dibujo dentro del panel admin).
 
-## 10. Preguntas abiertas (a definir antes de programar)
+## 10. Decisiones tomadas (respuestas del 30-09-2026)
 
-1. **"Sector"**: ¿es una agrupación de varios sitios (ej. Sector A = sitios 1–12) o se refiere a las zonas acceso/living/fondo de patio?
-2. **Edificios**: ¿se controlan igual que los sitios (m³ y estado) y también se subdividen?
-3. **m³ por viaje**: ¿se mide/estima por viaje o se usa la capacidad nominal del camión?
-4. **Volumen por sitio**: ¿se calcula solo desde los viajes de camión, o el admin también puede ingresarlo directo (ej. por topografía)?
-5. **Zonas de sitio**: ¿solo entregado / no entregado, o también "en proceso"?
-6. **Quién registra camiones**: ¿solo el administrador, o un controlador en portería desde el celular (tercer rol "registrador")?
-7. **Visitas**: ¿una cuenta compartida o una cuenta por persona?
-8. **Carta Gantt**: ¿en qué formato la tienen hoy (Excel, MS Project, PDF)? ¿La tarea está a nivel de sitio o de zona?
-9. **Plano**: ¿un solo plano, o puede haber varios (etapas)?
+| Tema | Decisión |
+|---|---|
+| Sector | Cada sitio se divide en 3 entregas: acceso, living (casa), fondo de patio |
+| Edificios | Una sola zona; actividades subterráneo (corte) y escarpe |
+| Actividades | Todos los terrenos tienen corte y escarpe |
+| m³ por viaje | Capacidad del camión |
+| m³ por terreno | Viajes asignados + prorrateo de viajes generales + ajustes manuales |
+| Estados de zona | Sin intervenir / en proceso / entregado |
+| Registro de camiones | CSV diario de la máquina lectora de tarjetas |
+| Visitas | Acceso libre, sin cuenta |
+| Carta Gantt | Excel, por zona de cada sitio, por semana |
+| Horizonte | La página se seguirá alimentando para seguir el avance de la urbanización |
+
+## 11. Pendiente para empezar a programar
+
+1. **Ejemplo del CSV** de la máquina de tarjetas (un día cualquiera) para conocer sus columnas.
+2. **La carta Gantt en Excel** (para reconocer el formato de las tareas).
+3. **La imagen del plano**.
+4. **Listado de camiones**: patente, tarjeta y capacidad en m³.
+5. **Pasajes y tramos**: ¿cuántos hay? ¿también tienen escarpe/corte y una entrega?
+6. **Regla de prorrateo** (§5.3): ¿proporcional al volumen proyectado de los terrenos en proceso ese día?
