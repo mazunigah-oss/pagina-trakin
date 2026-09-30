@@ -1,6 +1,6 @@
 # Plataforma de seguimiento de movimiento de tierra — Análisis de requerimientos
 
-Versión 0.3 · 30-09-2026 · Incorpora respuestas del mandante y el plano DXF. Primera versión implementada (ver README).
+Versión 0.4 · 30-09-2026 · Aplicación en Streamlit, formato real de tickets de la máquina (ver README).
 
 ## 1. Objetivo
 
@@ -152,18 +152,15 @@ Comparado con el estado real → **atrasado / al día / adelantado**.
 
 ## 9. Factibilidad e implementación
 
-**Sí es factible** y ya existe una primera versión (ver `README.md`).
+Implementado como aplicación **Streamlit** (Python), publicable en Streamlit Community Cloud (ver README).
 
-| Pieza | Implementación | Por qué |
-|---|---|---|
-| Servidor | Node.js + Express | un solo proceso, fácil de publicar |
-| Base de datos | SQLite (archivo) | sin servicios externos ni cuentas; suficiente para el volumen de la obra. Migrable a PostgreSQL si crece |
-| Mapa | SVG generado desde el DXF | zonas exactas del plano, clic y colores por estado, funciona en celular |
-| Acceso | Visita libre; admin con contraseña (cookie firmada, 12 h) | |
-| Carga de datos | CSV / Excel con revisión previa, modos SUMA / ACTUALIZA / REEMPLAZA, historial y deshacer | |
-
-El plano se procesó desde `plano.dxf`: se unieron las líneas de las capas de sitios, `Acceso` y `Living`,
-obteniendo exactamente 144 zonas (48 × 3), más los 2 edificios de la capa `Edificios`.
+| Pieza | Implementación |
+|---|---|
+| App | Streamlit + Plotly (plano interactivo con hover y zoom) |
+| Datos | SQLAlchemy: PostgreSQL en la nube (`DATABASE_URL`, ej. Neon/Supabase) o SQLite local |
+| Acceso | Visita libre; administrador con contraseña (`ADMIN_PASSWORD` en Secrets) |
+| Cargas | CSV/Excel con revisión previa, modos SUMA / ACTUALIZA / REEMPLAZA, historial y deshacer |
+| Plano | `scripts/procesar_dxf.py`: 144 terrazas desde el DXF, sin intervención manual |
 
 ## 10. Decisiones tomadas (respuestas del 30-09-2026)
 
@@ -175,18 +172,18 @@ obteniendo exactamente 144 zonas (48 × 3), más los 2 edificios de la capa `Edi
 | m³ por viaje | Capacidad del camión |
 | m³ por terreno | Viajes asignados + prorrateo de viajes generales + ajustes manuales |
 | Estados de zona | Sin intervenir / en proceso / entregado |
-| Registro de camiones | CSV diario de la máquina lectora de tarjetas |
+| Registro de camiones | CSV de la máquina: `TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO`. El volumen viene en el ticket (no se necesita maestro de camiones). Las anulaciones restan |
 | Visitas | Acceso libre, sin cuenta |
-| Carta Gantt | Excel, por zona de cada sitio, por semana |
+| Carta Gantt | Por ahora CSV con inicio y término del movimiento de tierra por sitio (2 sitios por semana según el Gantt real) |
 | Horizonte | La página se seguirá alimentando para seguir el avance de la urbanización |
 
 ## 11. Pendiente
 
-1. **Ejemplo real del CSV** de la máquina de tarjetas, para ajustar los nombres de columnas si difieren.
-2. **La carta Gantt real en Excel**, para confirmar que se reconoce su formato.
-3. **Listado de camiones**: patente, tarjeta y capacidad en m³.
-4. **Pasajes y tramos de calle**: no vienen como zonas cerradas en el DXF; falta definir sus límites
-   (capas con polilíneas cerradas) y si llevan escarpe/corte y entrega.
-5. **Regla de prorrateo**: implementada como proporcional al volumen proyectado de las actividades
-   *actualmente* en proceso. Si cambian los estados, el reparto histórico se recalcula.
-6. **Publicación**: elegir dónde alojar la página y definir la contraseña de administrador.
+1. **Base de datos permanente** para Streamlit Cloud (Neon o Supabase) y contraseña de administrador.
+2. **Carta Gantt completa**: hoy el ejemplo usa la fila "Excavación a máquina zonas de arcilla bajo radieres";
+   desde el sitio 39 las semanas son extrapoladas. Se puede agregar lectura directa del Excel del Gantt
+   (celdas "3-4" por semana).
+3. **DXF según `FORMATO_DXF.md`**: el `Lomas3.dxf` recibido es idéntico al plano anterior (solo líneas, sin capa
+   `Patio`); el procesador igual lo lee correctamente.
+4. **Pasajes y calle**: sin polígonos en el DXF.
+5. **Regla de prorrateo**: proporcional al volumen proyectado de las actividades *actualmente* en proceso.

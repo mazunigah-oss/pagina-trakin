@@ -1,94 +1,94 @@
-# Plataforma de avance de movimiento de tierra
+# Avance movimiento de tierra — Loma La Cruz
 
-Página web para seguir el movimiento de tierra y las entregas de una urbanización de 48 sitios
-(cada uno dividido en acceso, living y fondo de patio) y 2 edificios.
+Aplicación web (Streamlit) para seguir el movimiento de tierra y las entregas de terrazas de
+48 sitios (Etapas 1 y 2), cada uno dividido en **acceso, living y fondo de patio**, más 2 edificios.
 
 - **Visita**: acceso libre, solo lectura.
-- **Administrador**: botón "Ingresar" con contraseña; puede editar estados y cargar archivos.
+- **Administrador**: barra lateral → "Acceso administrador" (contraseña = secreto `ADMIN_PASSWORD`).
 
 Requerimientos y decisiones: [`docs/01-analisis-requerimientos.md`](docs/01-analisis-requerimientos.md).
 
-## Qué muestra
+## Pestañas
 
 | Pestaña | Contenido |
 |---|---|
-| Resumen | Camiones, viajes y m³ del día; origen de la tierra por sitio; m³ de los últimos 30 días; conteo de entregas y atrasos |
-| Entregas | Plano con las 146 zonas coloreadas por estado real (sin intervenir / en proceso / entregado) |
-| Programa (Gantt) | Cómo deberíamos ir a la fecha según la carta Gantt, y real vs. programado (atrasado / al día / adelantado) |
-| Movimiento de tierra | % de avance escarpe + corte por terreno (m³ retirados / proyectados), con detalle del cálculo |
-| Camiones | Listado de salidas filtrable por fechas |
-| Cargar datos | (admin) Subida de archivos CSV/Excel con revisión previa e historial |
+| Resumen | Camiones, viajes y m³ del día; origen de la tierra por sitio; m³ de los últimos 30 días; entregas y sitios atrasados |
+| Entregas | Plano con las 144 terrazas + edificios según su estado (sin intervenir / en proceso / entregado) |
+| Programa | Cómo deberíamos ir a la fecha según la carta Gantt, real vs. programado y la carta Gantt |
+| Movimiento de tierra | % de avance (m³ retirados / proyectados) por sitio, con el detalle del cálculo |
+| Tickets | Tickets de la máquina filtrables por fecha |
+| Cargar datos *(admin)* | Subida de archivos con revisión previa, historial y deshacer |
+| Editar estados *(admin)* | Tabla editable de estados de terrazas, escarpe/corte y volúmenes proyectados |
 
-El selector "Ver al día" permite ver cualquier fecha pasada o futura.
+El selector **Ver al día** muestra la obra en cualquier fecha.
 
-## Cargar información con archivos
+## Archivos que se cargan
 
-Cada tipo de archivo tiene una plantilla (botón "Descargar plantilla" en la página, o ejemplos en
-[`data/ejemplos/`](data/ejemplos)). Se aceptan `.csv` (separado por `;` o `,`) y `.xlsx`.
-Los encabezados no distinguen mayúsculas ni tildes y aceptan sinónimos (ej. `placa` = `patente`).
+Plantillas en la pestaña "Cargar datos" y ejemplos en [`data/ejemplos/`](data/ejemplos). CSV (`;` o `,`) o Excel.
 
-| Archivo | Modo | Qué hace |
+| Archivo | Modo | Columnas |
 |---|---|---|
-| Salidas de camiones | **SUMA** | Agrega viajes. m³ = capacidad del camión. Omite los que ya estaban (misma patente + fecha + hora), así que se puede subir el mismo archivo dos veces. Sin sitio → "General" (se prorratea). |
-| Maestro de camiones | **ACTUALIZA** | Crea o modifica camiones por patente (capacidad, tarjeta, empresa). |
-| Volúmenes proyectados | **ACTUALIZA** | m³ proyectados y estado de escarpe / corte por terreno. |
-| Estado de entregas | **ACTUALIZA** | Estado y fecha de entrega de acceso / living / fondo de patio. |
-| Ajustes de volumen | **SUMA** | Suma o resta m³ a una actividad (ej. por topografía). |
-| Carta Gantt | **REEMPLAZA** | Borra el programa anterior y carga el nuevo. Reconoce textos como "Entrega acceso sitio 15" y "semana del 15 al 20 de septiembre". |
+| Tickets de la máquina | **SUMA** | `TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO` — tal como sale de la máquina |
+| Programa (Gantt) | **REEMPLAZA** | `sitio;inicio;termino` (+ opcional `actividad`, `zona`, `tarea`) |
+| Volúmenes proyectados | **ACTUALIZA** | `sitio;actividad;volumen_proyectado_m3;estado` |
+| Entregas de terrazas | **ACTUALIZA** | `sitio;zona;estado;fecha_entrega` |
+| Ajustes (topografía) | **SUMA** | `sitio;actividad;fecha;volumen_m3;motivo` |
 
-Flujo: elegir archivo → **Revisar** (muestra cuántas filas se agregan o actualizan y los errores por fila, sin guardar) →
-**Confirmar carga**. Las cargas que suman o reemplazan se pueden **deshacer** desde el historial.
+Tickets:
+- Cada ticket se guarda una sola vez (clave = TICKET + ESTADO): se puede subir el CSV del día, uno acumulado o el
+  mismo dos veces sin duplicar.
+- `ANULACION` resta su volumen (y descuenta el viaje).
+- `SECTOR` = número de sitio. Vacío u otro valor → "General", que se reparte entre las actividades en proceso según su
+  volumen proyectado.
+- `TIPO`: `CORTE` o `DESCARPE` (escarpe).
 
-### Cómo se calculan los m³ retirados
+Un sitio se considera **terminado** si el administrador marca escarpe y corte como terminados, o si ya se retiró todo su
+volumen proyectado.
 
-```
-retirado = viajes asignados al terreno (y actividad)
-         + prorrateo de viajes "General" (proporcional al volumen proyectado de las actividades en proceso)
-         + ajustes manuales
-```
+## Publicar en Streamlit Community Cloud
 
-## Ejecutar
+1. Entrar a <https://share.streamlit.io> con la cuenta de GitHub que tiene acceso a este repositorio.
+2. **Create app** → *Deploy a public app from GitHub*:
+   - Repository: `mazunigah-oss/pagina-trakin`
+   - Branch: la rama con este código (por ejemplo `main` después de unir los cambios)
+   - Main file path: `streamlit_app.py`
+3. **Advanced settings** → Python 3.12 y en **Secrets** pegar (ver `.streamlit/secrets.toml.example`):
+   ```toml
+   ADMIN_PASSWORD = "una-clave-segura"
+   DATABASE_URL = "postgresql://..."
+   ```
+4. **Deploy**. La URL queda como `https://<nombre>.streamlit.app`.
 
-Requiere Node.js 20 o superior.
+**Importante — dónde se guardan los datos:** Streamlit Community Cloud borra los archivos de la app cada vez que se
+reinicia (actualizaciones, inactividad). Para no perder lo cargado, use una base PostgreSQL gratuita
+([Neon](https://neon.tech) o [Supabase](https://supabase.com)) y ponga su cadena de conexión en `DATABASE_URL`. Las tablas
+se crean solas la primera vez. Sin `DATABASE_URL` la app funciona, pero con un archivo SQLite temporal.
+
+## Ejecutar localmente
 
 ```bash
-npm install
-ADMIN_PASSWORD='una-clave-segura' npm start        # http://localhost:3000
+pip install -r requirements.txt
+python scripts/generar_ejemplos.py --cargar   # opcional: datos de ejemplo
+ADMIN_PASSWORD=demo streamlit run streamlit_app.py
 ```
 
-Variables de entorno:
-
-| Variable | Uso |
-|---|---|
-| `ADMIN_PASSWORD` | Contraseña del administrador (obligatoria al publicar; si falta se usa `admin`) |
-| `PORT` | Puerto (por defecto 3000) |
-| `DB_PATH` | Archivo de la base de datos SQLite (por defecto `data/obra.db`) |
-| `SESSION_SECRET` | Opcional, clave para firmar la sesión |
-
-Para ver la página con datos de ejemplo: `node scripts/generar_ejemplos.js --cargar` (antes de `npm start`).
-
-Pruebas: `npm test`.
-
-## Publicar en internet
-
-Es un solo proceso Node con una base SQLite en un archivo, así que sirve cualquier servidor con disco persistente:
-Railway, Render (con disco), Fly.io (con volumen) o un VPS. Configurar `ADMIN_PASSWORD`, apuntar `DB_PATH`
-al disco persistente y respaldar ese archivo periódicamente.
+Pruebas: `pip install pytest && pytest`.
 
 ## Plano
 
-`data/geometria.json` contiene los polígonos (en metros) generados desde el DXF con
-`scripts/procesar_dxf.py` (ver instrucciones en el script). Si cambia el plano, se vuelve a ejecutar el script
-y se reinicia la base de datos.
+`data/geometria.json` se genera desde el DXF con `scripts/procesar_dxf.py` (acepta el formato de
+[`docs/FORMATO_DXF.md`](docs/FORMATO_DXF.md) con polígonos cerrados, y también el plano actual hecho de líneas).
+Si cambia el plano: `python scripts/procesar_dxf.py nuevo.dxf data/geometria.json` y reiniciar la base.
 
 ## Estructura
 
 ```
-src/server.js      API y servidor web
-src/db.js          esquema SQLite y carga inicial de terrenos/zonas
-src/calculos.js    volúmenes, prorrateo, estado programado vs real, resumen del día
-src/importar.js    lectura y validación de archivos CSV/Excel
-public/            página (HTML, CSS, JS sin dependencias)
-data/geometria.json, data/fuente/   plano procesado y archivos fuente (DXF, PNG)
-data/ejemplos/     archivos de ejemplo con el formato de cada carga
+streamlit_app.py        la aplicación
+obra/db.py              tablas (SQLite o PostgreSQL) y carga inicial de sitios/terrazas
+obra/calculos.py        m³ retirados, prorrateo, programa vs. real, resumen diario
+obra/importar.py        lectura y validación de archivos
+obra/mapa.py            plano interactivo (Plotly)
+scripts/                procesar DXF, generar ejemplos
+data/                   geometría, DXF fuente, ejemplos
+tests/                  pruebas (pytest)
 ```
