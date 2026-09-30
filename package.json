@@ -1,0 +1,31 @@
+{
+  "name": "pagina-trakin",
+  "version": "1.0.0",
+  "description": "Plataforma web para seguimiento de movimiento de tierra y entregas de una urbanización",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mazunigah-oss/pagina-trakin.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mazunigah-oss/pagina-trakin/issues"
+  },
+  "homepage": "https://github.com/mazunigah-oss/pagina-trakin#readme",
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "csv-parse": "^7.0.3",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "multer": "^2.4.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

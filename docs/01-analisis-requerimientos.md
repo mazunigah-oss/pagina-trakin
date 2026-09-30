@@ -1,6 +1,6 @@
 # Plataforma de seguimiento de movimiento de tierra — Análisis de requerimientos
 
-Versión 0.2 · 30-09-2026 · Incorpora respuestas del mandante. Esquema de base de datos en `db/schema.sql`.
+Versión 0.3 · 30-09-2026 · Incorpora respuestas del mandante y el plano DXF. Primera versión implementada (ver README).
 
 ## 1. Objetivo
 
@@ -150,24 +150,20 @@ Comparado con el estado real → **atrasado / al día / adelantado**.
 - Mantener el maestro de camiones (patente, tarjeta, capacidad).
 - Subir / reemplazar la carta Gantt en Excel.
 
-## 9. Factibilidad
+## 9. Factibilidad e implementación
 
-**Sí es factible** como aplicación web estándar, accesible desde cualquier computador (y celular) con un navegador, sin instalar nada.
+**Sí es factible** y ya existe una primera versión (ver `README.md`).
 
-Arquitectura propuesta:
-
-| Pieza | Propuesta | Por qué |
+| Pieza | Implementación | Por qué |
 |---|---|---|
-| Frontend | Next.js (React) | una sola app para admin y visita |
-| Mapa interactivo | Leaflet con imagen del plano (`CRS.Simple`) + polígonos, o SVG sobre la imagen | zoom, clic, colores por estado |
-| Base de datos | PostgreSQL (Supabase) | datos relacionales, consultas por fecha |
-| Autenticación y roles | Supabase Auth + reglas por rol | login admin / visita |
-| Archivos (plano) | Supabase Storage | imágenes del mapa |
-| Hosting | Vercel + Supabase | plan gratuito suficiente para este volumen; HTTPS incluido |
+| Servidor | Node.js + Express | un solo proceso, fácil de publicar |
+| Base de datos | SQLite (archivo) | sin servicios externos ni cuentas; suficiente para el volumen de la obra. Migrable a PostgreSQL si crece |
+| Mapa | SVG generado desde el DXF | zonas exactas del plano, clic y colores por estado, funciona en celular |
+| Acceso | Visita libre; admin con contraseña (cookie firmada, 12 h) | |
+| Carga de datos | CSV / Excel con revisión previa, modos SUMA / ACTUALIZA / REEMPLAZA, historial y deshacer | |
 
-Volumen de datos esperado: bajo (≈200 elementos/zonas, algunos cientos de viajes al día como máximo), sin problemas de rendimiento.
-
-Único trabajo manual relevante: **dibujar una vez los polígonos** de los 48 sitios, 144 zonas, pasajes y tramos sobre el plano (se hace con una herramienta de dibujo dentro del panel admin).
+El plano se procesó desde `plano.dxf`: se unieron las líneas de las capas de sitios, `Acceso` y `Living`,
+obteniendo exactamente 144 zonas (48 × 3), más los 2 edificios de la capa `Edificios`.
 
 ## 10. Decisiones tomadas (respuestas del 30-09-2026)
 
@@ -184,11 +180,13 @@ Volumen de datos esperado: bajo (≈200 elementos/zonas, algunos cientos de viaj
 | Carta Gantt | Excel, por zona de cada sitio, por semana |
 | Horizonte | La página se seguirá alimentando para seguir el avance de la urbanización |
 
-## 11. Pendiente para empezar a programar
+## 11. Pendiente
 
-1. **Ejemplo del CSV** de la máquina de tarjetas (un día cualquiera) para conocer sus columnas.
-2. **La carta Gantt en Excel** (para reconocer el formato de las tareas).
-3. **La imagen del plano**.
-4. **Listado de camiones**: patente, tarjeta y capacidad en m³.
-5. **Pasajes y tramos**: ¿cuántos hay? ¿también tienen escarpe/corte y una entrega?
-6. **Regla de prorrateo** (§5.3): ¿proporcional al volumen proyectado de los terrenos en proceso ese día?
+1. **Ejemplo real del CSV** de la máquina de tarjetas, para ajustar los nombres de columnas si difieren.
+2. **La carta Gantt real en Excel**, para confirmar que se reconoce su formato.
+3. **Listado de camiones**: patente, tarjeta y capacidad en m³.
+4. **Pasajes y tramos de calle**: no vienen como zonas cerradas en el DXF; falta definir sus límites
+   (capas con polilíneas cerradas) y si llevan escarpe/corte y entrega.
+5. **Regla de prorrateo**: implementada como proporcional al volumen proyectado de las actividades
+   *actualmente* en proceso. Si cambian los estados, el reparto histórico se recalcula.
+6. **Publicación**: elegir dónde alojar la página y definir la contraseña de administrador.
