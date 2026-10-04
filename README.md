@@ -13,6 +13,7 @@ Requerimientos y decisiones: [`docs/01-analisis-requerimientos.md`](docs/01-anal
 | Pestaña | Contenido |
 |---|---|
 | Resumen | Camiones, viajes y m³ del día; origen de la tierra por sitio; m³ de los últimos 30 días; entregas y sitios atrasados |
+| Curva de avance | Curvas programada, real y proyectada al ritmo actual: fecha estimada de término, % que se alcanzaría a la fecha de término programada y ritmo necesario para terminar a tiempo |
 | Entregas | Plano con las 144 terrazas + edificios según su estado (sin intervenir / en proceso / entregado) |
 | Programa | Cómo deberíamos ir a la fecha según la carta Gantt, real vs. programado y la carta Gantt |
 | Movimiento de tierra | % de avance (m³ retirados / proyectados) por sitio, con el detalle del cálculo |

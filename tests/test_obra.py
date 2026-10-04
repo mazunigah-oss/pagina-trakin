@@ -163,7 +163,8 @@ def test_app_streamlit_arranca(tmp_path, monkeypatch):
     monkeypatch.setenv('ADMIN_PASSWORD', 'clave')
     at = AppTest.from_file(str(RAIZ / 'streamlit_app.py'), default_timeout=60).run()
     assert not at.exception
-    assert [t.label for t in at.tabs][:5] == ['Resumen', 'Entregas', 'Programa', 'Movimiento de tierra', 'Tickets']
+    assert [t.label for t in at.tabs][:6] == ['Resumen', 'Curva de avance', 'Entregas', 'Programa',
+                                              'Movimiento de tierra', 'Tickets']
     at.sidebar.text_input[0].input('mala')
     at.sidebar.button[0].click().run()
     assert 'Cargar datos' not in [t.label for t in at.tabs]
@@ -171,3 +172,37 @@ def test_app_streamlit_arranca(tmp_path, monkeypatch):
     at.sidebar.button[0].click().run()
     assert not at.exception
     assert 'Cargar datos' in [t.label for t in at.tabs]
+
+
+def test_curva_de_avance_y_proyeccion(motor):
+    cargar(motor, 'volumenes', b'sitio;actividad;volumen_proyectado_m3\n1;corte;100\n2;corte;100\n')
+    cargar(motor, 'gantt', b'sitio;inicio;termino\n1;01/10/2026;10/10/2026\n2;11/10/2026;20/10/2026\n')
+    filas = ['TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO']
+    filas += [f'{d};{d:02d}/10/2026;09:00;AB1234;10;1;CORTE;VALIDO' for d in range(1, 11)]
+    cargar(motor, 'viajes', '\n'.join(filas).encode())
+    d = tablas(motor)
+    prog = C.curva_programada(d['gantt'], d['actividad']).set_index('fecha')['pct']
+    assert prog[pd.Timestamp('2026-10-10')] == pytest.approx(50)
+    assert prog[pd.Timestamp('2026-10-20')] == pytest.approx(100)
+    real = C.curva_real(d['viaje'], d['ajuste'], 200, '2026-10-10')
+    assert real['pct'].iloc[-1] == pytest.approx(50)
+
+    p = C.proyeccion(real, C.curva_programada(d['gantt'], d['actividad']), '2026-10-10', ventana_dias=7)
+    assert p['avance_real'] == pytest.approx(50) and p['avance_programado'] == pytest.approx(50)
+    assert p['ritmo'] == pytest.approx(5)          # (50 % - 15 %) / 7 días
+    assert p['ritmo_necesario'] == pytest.approx(5)
+    assert p['fecha_termino_estimada'] == pd.Timestamp('2026-10-20')
+    assert p['dias_desfase'] == 0 and p['pct_a_termino_programado'] == pytest.approx(100)
+
+    # Si el ritmo baja a la mitad: termina 10 días tarde y al término programado llega a 75 %
+    real_lento = real.assign(pct=real['pct'] / 2)
+    p = C.proyeccion(real_lento, C.curva_programada(d['gantt'], d['actividad']), '2026-10-10', ventana_dias=7)
+    assert p['pct_a_termino_programado'] == pytest.approx(25 + 2.5 * 10)
+    assert p['fecha_termino_estimada'] == pd.Timestamp('2026-10-10') + pd.Timedelta(days=30)
+    assert p['dias_desfase'] == 20
+
+
+def test_proyeccion_sin_avance_no_inventa_fecha():
+    real = pd.DataFrame({'fecha': pd.date_range('2026-10-01', '2026-10-20'), 'pct': [10.0] * 20, 'm3': [10.0] * 20})
+    p = C.proyeccion(real, pd.DataFrame(columns=['fecha', 'pct']), '2026-10-20', 14)
+    assert p['ritmo'] == 0 and p['fecha_termino_estimada'] is None and p['serie'].empty

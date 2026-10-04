@@ -164,3 +164,91 @@ def serie_diaria(viajes: pd.DataFrame, dia: str, dias=30):
     fechas = [(fin - timedelta(days=i)).isoformat() for i in range(dias - 1, -1, -1)]
     m3 = viajes.groupby('fecha')['volumen_m3'].sum() if not viajes.empty else pd.Series(dtype=float)
     return pd.DataFrame({'fecha': pd.to_datetime(fechas), 'm3': [float(m3.get(f, 0.0)) for f in fechas]})
+
+
+# ---------------------------------------------------------------- curva de avance
+
+
+def curva_programada(gantt: pd.DataFrame, actividades: pd.DataFrame):
+    """Serie diaria del % acumulado programado.
+
+    Cada tarea del Gantt (sin zona) reparte el volumen proyectado de su sitio (o de su actividad, si la
+    indica) en partes iguales entre los días de inicio a término. Si no hay volúmenes proyectados,
+    cada tarea pesa lo mismo. Devuelve DataFrame (fecha, pct) o vacío si no hay programa.
+    """
+    g = gantt[gantt['zona'].isna()] if not gantt.empty else gantt
+    if g.empty:
+        return pd.DataFrame(columns=['fecha', 'pct'])
+    proy = actividades.groupby(['terreno_id', 'tipo'])['volumen_proyectado_m3'].sum()
+    pesos = []
+    for _, t in g.iterrows():
+        if t['actividad']:
+            pesos.append(float(proy.get((t['terreno_id'], t['actividad']), 0.0)))
+        else:
+            pesos.append(float(proy.loc[t['terreno_id']].sum()) if t['terreno_id'] in proy.index.get_level_values(0) else 0.0)
+    if sum(pesos) == 0:
+        pesos = [1.0] * len(g)
+    total = sum(pesos)
+    inicio, fin = date.fromisoformat(g['inicio'].min()), date.fromisoformat(g['termino'].max())
+    fechas = pd.date_range(inicio - timedelta(days=1), fin)
+    diario = pd.Series(0.0, index=fechas)
+    for (_, t), peso in zip(g.iterrows(), pesos):
+        dias = pd.date_range(t['inicio'], t['termino'])
+        diario[dias] += peso / len(dias)
+    return pd.DataFrame({'fecha': fechas, 'pct': 100 * diario.cumsum().values / total})
+
+
+def curva_real(viajes: pd.DataFrame, ajustes: pd.DataFrame, total_proyectado: float, hasta: str):
+    """Serie diaria del % acumulado real (tickets netos + ajustes) / volumen proyectado total."""
+    movs = pd.concat([viajes[['fecha', 'volumen_m3']], ajustes[['fecha', 'volumen_m3']]])
+    movs = movs[movs['fecha'] <= hasta]
+    if movs.empty or total_proyectado <= 0:
+        return pd.DataFrame(columns=['fecha', 'pct', 'm3'])
+    por_dia = movs.groupby('fecha')['volumen_m3'].sum()
+    fechas = pd.date_range(date.fromisoformat(por_dia.index.min()) - timedelta(days=1), hasta)
+    m3 = por_dia.reindex(fechas.strftime('%Y-%m-%d'), fill_value=0.0).cumsum().values
+    return pd.DataFrame({'fecha': fechas, 'm3': m3, 'pct': 100 * m3 / total_proyectado})
+
+
+def proyeccion(real: pd.DataFrame, programada: pd.DataFrame, hasta: str, ventana_dias=14):
+    """Proyecta el avance real con el ritmo de los últimos `ventana_dias` días corridos.
+
+    Devuelve dict con: avance_real, avance_programado (a la fecha), ritmo (pp/día), ritmo_necesario,
+    fecha_termino_estimada, fecha_termino_programada, pct_a_termino_programado, dias_desfase y la
+    serie (fecha, pct) de la proyección. Valores None cuando no se pueden calcular.
+    """
+    hoy = pd.Timestamp(hasta)
+    out = dict(avance_real=None, avance_programado=None, ritmo=None, ritmo_necesario=None,
+               fecha_termino_estimada=None, fecha_termino_programada=None, pct_a_termino_programado=None,
+               dias_desfase=None, serie=pd.DataFrame(columns=['fecha', 'pct']))
+    if not programada.empty:
+        out['fecha_termino_programada'] = programada['fecha'].max()
+        antes = programada[programada['fecha'] <= hoy]
+        out['avance_programado'] = float(antes['pct'].iloc[-1]) if not antes.empty else 0.0
+    if real.empty:
+        return out
+    serie = real.set_index('fecha')['pct']
+    actual = float(serie.iloc[-1])
+    out['avance_real'] = actual
+    desde = hoy - pd.Timedelta(days=ventana_dias)
+    base = float(serie[serie.index <= desde].iloc[-1]) if (serie.index <= desde).any() else float(serie.iloc[0])
+    dias = min(ventana_dias, (hoy - serie.index[0]).days) or 1
+    ritmo = (actual - base) / dias
+    out['ritmo'] = ritmo
+    fin_prog = out['fecha_termino_programada']
+    if fin_prog is not None and fin_prog > hoy and actual < 100:
+        out['ritmo_necesario'] = (100 - actual) / (fin_prog - hoy).days
+    if actual >= 100:
+        out['fecha_termino_estimada'] = serie[serie >= 100].index[0]
+    elif ritmo > 0:
+        out['fecha_termino_estimada'] = hoy + pd.Timedelta(days=int(-(-(100 - actual) // ritmo)))
+    if fin_prog is not None:
+        out['pct_a_termino_programado'] = min(100.0, actual + ritmo * max(0, (fin_prog - hoy).days))
+        if out['fecha_termino_estimada'] is not None:
+            out['dias_desfase'] = (out['fecha_termino_estimada'] - fin_prog).days
+    if ritmo > 0 and actual < 100:
+        fin = max(x for x in (out['fecha_termino_estimada'], fin_prog) if x is not None)
+        fechas = pd.date_range(hoy, fin)
+        out['serie'] = pd.DataFrame({'fecha': fechas,
+                                     'pct': [min(100.0, actual + ritmo * (f - hoy).days) for f in fechas]})
+    return out

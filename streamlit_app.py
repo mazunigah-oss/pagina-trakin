@@ -9,6 +9,7 @@ from datetime import date
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import insert, select, update
 
@@ -105,7 +106,7 @@ prog_z = C.programa_zonas(zonas, gantt, dia)
 st.title('Avance movimiento de tierra')
 st.caption(f'Loma La Cruz · 48 sitios · Etapas 1 y 2 · datos al {fecha_cl(dia)}')
 
-pestanas = ['Resumen', 'Entregas', 'Programa', 'Movimiento de tierra', 'Tickets']
+pestanas = ['Resumen', 'Curva de avance', 'Entregas', 'Programa', 'Movimiento de tierra', 'Tickets']
 if ADMIN:
     pestanas += ['Cargar datos', 'Editar estados']
 tabs = dict(zip(pestanas, st.tabs(pestanas)))
@@ -164,6 +165,88 @@ with tabs['Resumen']:
     e2.metric('En proceso', num(cont.get('en_proceso', 0)))
     e3.metric('Sin intervenir', num(cont.get('sin_intervenir', 0)))
     e4.metric('Sitios atrasados (programa)', num((prog_t['comparacion'] == 'atrasado').sum()))
+
+# ---------------------------------------------------------------- Curva de avance
+
+with tabs['Curva de avance']:
+    total_proy = float(acts['volumen_proyectado_m3'].sum())
+    prog = C.curva_programada(gantt, acts)
+    real = C.curva_real(viajes, ajustes, total_proy, dia)
+    if total_proy <= 0:
+        st.info('Para calcular el % de avance hay que cargar los volúmenes proyectados (Cargar datos → Volúmenes '
+                'proyectados). Mientras tanto la curva programada se calcula con el mismo peso para cada sitio.')
+    ventana = st.segmented_control('Ritmo para proyectar', ['Últimos 7 días', 'Últimos 14 días', 'Últimos 30 días'],
+                                   default='Últimos 14 días', help='La proyección supone que el avance sigue al '
+                                   'ritmo promedio de este período (días corridos, incluye fines de semana).')
+    ventana_dias = {'Últimos 7 días': 7, 'Últimos 14 días': 14, 'Últimos 30 días': 30}.get(ventana, 14)
+    p = C.proyeccion(real, prog, dia, ventana_dias)
+
+    def fecha_ts(ts):
+        return '—' if ts is None else ts.strftime('%d-%m-%Y')
+
+    c1, c2, c3, c4 = st.columns(4)
+    dif = (p['avance_real'] - p['avance_programado']) if None not in (p['avance_real'], p['avance_programado']) else None
+    c1.metric('Avance real', f"{num(p['avance_real'], 1)} %",
+              None if dif is None else f'{num(dif, 1)} pp vs programado', delta_color='normal')
+    c2.metric('Avance programado a la fecha', f"{num(p['avance_programado'], 1)} %")
+    c3.metric('Término estimado', fecha_ts(p['fecha_termino_estimada']),
+              None if p['dias_desfase'] is None else
+              (f"{p['dias_desfase']} días de atraso" if p['dias_desfase'] > 0 else
+               f"{-p['dias_desfase']} días antes" if p['dias_desfase'] < 0 else 'a tiempo'),
+              delta_color='inverse' if (p['dias_desfase'] or 0) > 0 else 'normal',
+              help='Fecha en que se llegaría al 100 % si se mantiene el ritmo actual.')
+    c4.metric(f"Avance al {fecha_ts(p['fecha_termino_programada'])}", f"{num(p['pct_a_termino_programado'], 1)} %",
+              help='% que se alcanzaría en la fecha de término programada si se mantiene el ritmo actual.')
+
+    if p['ritmo'] is not None:
+        m3_dia = p['ritmo'] * total_proy / 100
+        texto = f"**Ritmo actual:** {num(p['ritmo'], 2)} % por día ({num(m3_dia, 0)} m³/día corrido)"
+        if p['ritmo_necesario'] is not None:
+            nec_m3 = p['ritmo_necesario'] * total_proy / 100
+            texto += (f" · **Ritmo necesario para terminar a tiempo:** {num(p['ritmo_necesario'], 2)} % por día "
+                      f"({num(nec_m3, 0)} m³/día)")
+            if p['ritmo'] > 0:
+                veces = p['ritmo_necesario'] / p['ritmo']
+                texto += (f" → hay que acelerar **{num(100 * (veces - 1))} %**" if veces > 1 else
+                          f" → alcanza con el **{num(100 * veces)} %** del ritmo actual")
+        st.markdown(texto)
+        if p['ritmo'] <= 0 and (p['avance_real'] or 0) < 100:
+            st.warning(f'No hubo avance en los últimos {ventana_dias} días: con ese ritmo la obra no termina.')
+
+    fig = go.Figure()
+    if not prog.empty:
+        fig.add_trace(go.Scatter(x=prog['fecha'], y=prog['pct'], name='Programada', mode='lines',
+                                 line=dict(color='#8a948e', width=2.5),
+                                 hovertemplate='%{x|%d-%m-%Y}<br>Programado: %{y:.1f} %<extra></extra>'))
+    if not real.empty:
+        fig.add_trace(go.Scatter(x=real['fecha'], y=real['pct'], name='Real', mode='lines',
+                                 line=dict(color='#2f6d4f', width=3), customdata=real['m3'],
+                                 hovertemplate='%{x|%d-%m-%Y}<br>Real: %{y:.1f} % (%{customdata:,.0f} m³)<extra></extra>'))
+    if not p['serie'].empty:
+        fig.add_trace(go.Scatter(x=p['serie']['fecha'], y=p['serie']['pct'], name='Proyección al ritmo actual',
+                                 mode='lines', line=dict(color='#e9a23b', width=3, dash='dot'),
+                                 hovertemplate='%{x|%d-%m-%Y}<br>Proyectado: %{y:.1f} %<extra></extra>'))
+    if p['fecha_termino_programada'] is not None and p['pct_a_termino_programado'] is not None:
+        fig.add_trace(go.Scatter(x=[p['fecha_termino_programada']], y=[p['pct_a_termino_programado']], mode='markers+text',
+                                 marker=dict(size=11, color='#e9a23b', line=dict(color='white', width=2)),
+                                 text=[f"{num(p['pct_a_termino_programado'])} %"], textposition='middle left',
+                                 name='% al término programado', hoverinfo='skip'))
+    if p['fecha_termino_estimada'] is not None and (p['avance_real'] or 0) < 100:
+        fig.add_trace(go.Scatter(x=[p['fecha_termino_estimada']], y=[100], mode='markers+text',
+                                 marker=dict(size=11, color='#d64545', symbol='diamond', line=dict(color='white', width=2)),
+                                 text=[f"100 % el {fecha_ts(p['fecha_termino_estimada'])}"], textposition='top center',
+                                 name='Término estimado', hoverinfo='skip'))
+    fig.add_vline(x=pd.Timestamp(dia), line_color='#1d2320', line_dash='dash', line_width=1)
+    fig.add_annotation(x=pd.Timestamp(dia), y=104, text='hoy', showarrow=False, font=dict(size=11))
+    fig.add_hline(y=100, line_color='#c9cfca', line_width=1)
+    fig.update_yaxes(title='% de avance', range=[0, 110], ticksuffix=' %')
+    fig.update_xaxes(title='', tickformat='%d/%m/%y')
+    fig.update_layout(height=460, margin=dict(l=0, r=0, t=30, b=0), hovermode='x unified',
+                      legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0))
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    st.caption('Programada: el volumen proyectado de cada sitio repartido entre el inicio y el término de su tarea en '
+               'la carta Gantt. Real: m³ netos de tickets + ajustes sobre el volumen proyectado total. Proyección: '
+               'línea recta desde hoy con el ritmo promedio del período elegido.')
 
 # ---------------------------------------------------------------- Entregas
 
