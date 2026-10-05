@@ -171,7 +171,7 @@ with tabs['Resumen']:
 with tabs['Curva de avance']:
     total_proy = float(acts['volumen_proyectado_m3'].sum())
     prog = C.curva_programada(gantt, acts)
-    real = C.curva_real(viajes, ajustes, total_proy, dia)
+    real = C.curva_real(viajes, ajustes, total_proy, dia, inicio=None if gantt.empty else gantt['inicio'].min())
     if total_proy <= 0:
         st.info('Para calcular el % de avance hay que cargar los volúmenes proyectados (Cargar datos → Volúmenes '
                 'proyectados). Mientras tanto la curva programada se calcula con el mismo peso para cada sitio.')
@@ -244,9 +244,12 @@ with tabs['Curva de avance']:
     fig.update_layout(height=460, margin=dict(l=0, r=0, t=30, b=0), hovermode='x unified',
                       legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0))
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    if p['fecha_ultimo_dato'] is not None and p['fecha_ultimo_dato'] < pd.Timestamp(dia):
+        st.caption(f"Último dato de avance: {fecha_ts(p['fecha_ultimo_dato'])}. La proyección parte desde esa fecha.")
     st.caption('Programada: el volumen proyectado de cada sitio repartido entre el inicio y el término de su tarea en '
                'la carta Gantt. Real: m³ netos de tickets + ajustes sobre el volumen proyectado total. Proyección: '
-               'línea recta desde hoy con el ritmo promedio del período elegido.')
+               'línea recta desde el último dato con el ritmo promedio del período elegido. Con avances informados '
+               'por fecha (sin tickets), la curva real une esos puntos en línea recta desde el inicio del programa.')
 
 # ---------------------------------------------------------------- Entregas
 

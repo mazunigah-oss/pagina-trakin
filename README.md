@@ -30,6 +30,7 @@ Plantillas en la pestaña "Cargar datos" y ejemplos en [`data/ejemplos/`](data/e
 | Archivo | Modo | Columnas |
 |---|---|---|
 | Tickets de la máquina | **SUMA** | `TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO` — tal como sale de la máquina |
+| Avance acumulado por sitio | **ACTUALIZA** | `sitio;fecha;avance_pct` (o `m3_acumulados`; opcional `volumen_proyectado_m3`, `actividad`) — para cuando no hay tickets: deja el sitio en ese avance a esa fecha |
 | Programa (Gantt) | **REEMPLAZA** | `sitio;inicio;termino` (+ opcional `actividad`, `zona`, `tarea`) |
 | Volúmenes proyectados | **ACTUALIZA** | `sitio;actividad;volumen_proyectado_m3;estado` |
 | Entregas de terrazas | **ACTUALIZA** | `sitio;zona;estado;fecha_entrega` |

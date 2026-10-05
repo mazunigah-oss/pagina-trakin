@@ -198,15 +198,26 @@ def curva_programada(gantt: pd.DataFrame, actividades: pd.DataFrame):
     return pd.DataFrame({'fecha': fechas, 'pct': 100 * diario.cumsum().values / total})
 
 
-def curva_real(viajes: pd.DataFrame, ajustes: pd.DataFrame, total_proyectado: float, hasta: str):
-    """Serie diaria del % acumulado real (tickets netos + ajustes) / volumen proyectado total."""
+def curva_real(viajes: pd.DataFrame, ajustes: pd.DataFrame, total_proyectado: float, hasta: str, inicio=None):
+    """Serie diaria del % acumulado real (tickets netos + ajustes) / volumen proyectado total.
+
+    Entre fechas con datos se interpola en línea recta (así, con avances informados cada semana la curva
+    no queda en escalones). Si se da `inicio` (comienzo del programa), la curva parte en 0 ese día.
+    La serie termina en el último día con datos (no se inventa avance después).
+    """
     movs = pd.concat([viajes[['fecha', 'volumen_m3']], ajustes[['fecha', 'volumen_m3']]])
     movs = movs[movs['fecha'] <= hasta]
     if movs.empty or total_proyectado <= 0:
         return pd.DataFrame(columns=['fecha', 'pct', 'm3'])
-    por_dia = movs.groupby('fecha')['volumen_m3'].sum()
-    fechas = pd.date_range(date.fromisoformat(por_dia.index.min()) - timedelta(days=1), hasta)
-    m3 = por_dia.reindex(fechas.strftime('%Y-%m-%d'), fill_value=0.0).cumsum().values
+    acum = movs.groupby('fecha')['volumen_m3'].sum().cumsum()
+    acum.index = pd.to_datetime(acum.index)
+    origen = acum.index.min() - pd.Timedelta(days=1)
+    if inicio:
+        origen = min(origen, pd.Timestamp(inicio) - pd.Timedelta(days=1))
+    acum.loc[origen] = 0.0
+    acum = acum.sort_index()
+    fechas = pd.date_range(origen, acum.index.max())
+    m3 = acum.reindex(fechas).interpolate(method='time').values
     return pd.DataFrame({'fecha': fechas, 'm3': m3, 'pct': 100 * m3 / total_proyectado})
 
 
@@ -220,7 +231,7 @@ def proyeccion(real: pd.DataFrame, programada: pd.DataFrame, hasta: str, ventana
     hoy = pd.Timestamp(hasta)
     out = dict(avance_real=None, avance_programado=None, ritmo=None, ritmo_necesario=None,
                fecha_termino_estimada=None, fecha_termino_programada=None, pct_a_termino_programado=None,
-               dias_desfase=None, serie=pd.DataFrame(columns=['fecha', 'pct']))
+               dias_desfase=None, fecha_ultimo_dato=None, serie=pd.DataFrame(columns=['fecha', 'pct']))
     if not programada.empty:
         out['fecha_termino_programada'] = programada['fecha'].max()
         antes = programada[programada['fecha'] <= hoy]
@@ -228,6 +239,8 @@ def proyeccion(real: pd.DataFrame, programada: pd.DataFrame, hasta: str, ventana
     if real.empty:
         return out
     serie = real.set_index('fecha')['pct']
+    hoy = min(hoy, serie.index[-1])  # se proyecta desde el último dato real
+    out['fecha_ultimo_dato'] = hoy
     actual = float(serie.iloc[-1])
     out['avance_real'] = actual
     desde = hoy - pd.Timedelta(days=ventana_dias)

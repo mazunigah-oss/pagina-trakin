@@ -232,3 +232,42 @@ def test_volumen_por_actividad_sigue_funcionando(motor):
     assert [f for f, _ in rev.errores] == [4]
     a = tablas(motor)['actividad'].set_index(['terreno_id', 'tipo'])['volumen_proyectado_m3']
     assert a[(1, 'escarpe')] == 80 and a[(1, 'corte')] == 200
+
+
+def test_avance_acumulado_por_sitio_sin_tickets(motor):
+    cargar(motor, 'gantt', b'sitio;inicio;termino\n1;01/09/2026;30/09/2026\n2;01/10/2026;30/10/2026\n')
+    # primer corte: % con el volumen proyectado en la misma planilla
+    rev = cargar(motor, 'avance', 'Sitio;Volumen total;Avance;Fecha\n1;200;50%;10/09/2026\n2;100;0%;10/09/2026\n'.encode())
+    assert not rev.errores and rev.resumen['proyectados_actualizados'] == 2
+    d = tablas(motor)
+    acts = C.volumenes(d['actividad'], d['viaje'], d['ajuste']).groupby('terreno_id')['retirado_m3'].sum()
+    assert acts[1] == pytest.approx(100) and acts[2] == pytest.approx(0)
+    # segundo corte: 80 % -> se agregan solo 60 m³ (no se suma el 80 % completo)
+    cargar(motor, 'avance', b'sitio;avance_pct;fecha\n1;80;20/09/2026\n')
+    d = tablas(motor)
+    acts = C.volumenes(d['actividad'], d['viaje'], d['ajuste'])
+    assert acts.groupby('terreno_id')['retirado_m3'].sum()[1] == pytest.approx(160)
+    # volver a subir el mismo corte no cambia nada
+    assert I.revisar(motor, 'avance', b'sitio;avance_pct;fecha\n1;80;20/09/2026\n').resumen['ajustes_de_volumen'] == 0
+    # curva real: 0 al inicio del programa, recta hasta 100 m³ el 10/09 y hasta 160 m³ el 20/09
+    real = C.curva_real(d['viaje'], d['ajuste'], 300, '2026-10-04', inicio='2026-09-01').set_index('fecha')['m3']
+    assert real[pd.Timestamp('2026-08-31')] == 0
+    assert real[pd.Timestamp('2026-09-15')] == pytest.approx(130)
+    assert real.index[-1] == pd.Timestamp('2026-09-20')
+    p = C.proyeccion(real.reset_index().assign(pct=lambda x: 100 * x['m3'] / 300), pd.DataFrame(columns=['fecha', 'pct']),
+                     '2026-10-04', 14)
+    assert p['fecha_ultimo_dato'] == pd.Timestamp('2026-09-20')
+    assert p['ritmo'] == pytest.approx(100 * (160 - real[pd.Timestamp('2026-09-06')]) / 300 / 14)
+
+
+def test_avance_en_fraccion_excel_y_m3(motor):
+    cargar(motor, 'volumenes', b'sitio;volumen\n3;400\n4;100\n')
+    buf = io.BytesIO()
+    pd.DataFrame({'Sitio': [3], 'Avance': [0.25]}).to_excel(buf, index=False)
+    cargar(motor, 'avance', buf.getvalue(), 'avance.xlsx')
+    cargar(motor, 'avance', b'sitio;m3_movidos\n4;30\n')
+    d = tablas(motor)
+    r = C.volumenes(d['actividad'], d['viaje'], d['ajuste']).groupby('terreno_id')['retirado_m3'].sum()
+    assert r[3] == pytest.approx(100) and r[4] == pytest.approx(30)
+    rev = I.revisar(motor, 'avance', b'sitio;avance\n5;40\n')
+    assert rev.errores and 'volumen proyectado' in rev.errores[0][1]

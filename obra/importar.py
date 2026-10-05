@@ -458,6 +458,118 @@ class Entregas(TipoArchivo):
                                                        fecha=o['fecha'] or hoy_chile()))
 
 
+class Avance(TipoArchivo):
+    id = 'avance'
+    titulo = 'Avance acumulado por sitio (sin tickets diarios)'
+    modo = 'ACTUALIZA'
+    ayuda = ('Para cuando no hay registros diarios: por cada sitio, cuánto se lleva movido A UNA FECHA, en % o en m³ '
+             'acumulados. La página ajusta el volumen retirado del sitio para que quede exactamente en ese valor a esa '
+             'fecha (no suma: si se informa 40 % y después 55 %, avanza 15 %). Conviene cargarlo cada semana con la '
+             'fecha del corte para que la curva tenga varios puntos. Opcional: volumen proyectado en la misma planilla.')
+    columnas = [
+        Columna('sitio', SITIO, True, '15'),
+        Columna('fecha', ('fecha_corte', 'fecha_avance', 'al'), False, '04/10/2026', 'Fecha del corte (vacío = hoy)'),
+        Columna('avance_pct', ('avance', 'porcentaje', 'pct', 'avance_porcentaje', 'porcentaje_avance', 'avance_real'),
+                False, '45', '% de avance del sitio (45, 45% o 0,45)'),
+        Columna('m3_acumulados', ('m3_movidos', 'cantidad', 'cantidad_movida', 'volumen_movido', 'm3_a_la_fecha',
+                                  'acumulado', 'movido', 'm3_ejecutados', 'ejecutado'),
+                False, '', 'Alternativa al %: m³ movidos a la fecha'),
+        Columna('volumen_proyectado_m3', ('volumen_proyectado', 'volumen_total', 'proyectado', 'cubicacion', 'total_m3'),
+                False, '', 'Opcional: actualiza el volumen proyectado del sitio'),
+        Columna('actividad', ('tipo', 'trabajo'), False, '', 'Opcional: escarpe o corte (vacío = sitio completo)'),
+    ]
+
+    def validar(self, con, df, rev):
+        from .calculos import volumenes
+        terrenos = mapa_terrenos(con)
+        acts = pd.read_sql(select(T.actividad), con)
+        viajes = pd.read_sql(select(T.viaje), con)
+        ajustes = pd.read_sql(select(T.ajuste), con)
+        c = {x.campo: x for x in self.columnas}
+        filas = df.to_dict('records')
+        # % como fracción (0,45) si todos los valores son <= 1 (típico de celdas Excel con formato %)
+        pcts = [norm_numero(str(valor(f, c['avance_pct'])).replace('%', '')) for f in filas
+                if not vacio(valor(f, c['avance_pct']))]
+        fraccion = bool(pcts) and all(isinstance(x, float) and 0 <= x <= 1 for x in pcts) and \
+            not any('%' in str(valor(f, c['avance_pct']) or '') for f in filas)
+        hoy = hoy_chile()
+        leidas = []
+        for f in filas:
+            n = f['_fila']
+            codigo = norm_terreno(valor(f, c['sitio']))
+            if codigo in (None, VACIO) or codigo not in terrenos:
+                rev.errores.append((n, f'Sitio "{valor(f, c["sitio"])}" no existe')); continue
+            fecha = norm_fecha(valor(f, c['fecha'])) or hoy
+            if fecha is VACIO:
+                rev.errores.append((n, f'Fecha inválida: "{valor(f, c["fecha"])}"')); continue
+            pct_txt = valor(f, c['avance_pct'])
+            pct = norm_numero(str(pct_txt).replace('%', '')) if not vacio(pct_txt) else None
+            m3 = norm_numero(valor(f, c['m3_acumulados']))
+            proy = norm_numero(valor(f, c['volumen_proyectado_m3']))
+            tipo = norm_actividad(valor(f, c['actividad']))
+            if VACIO in (pct, m3, proy) or tipo is VACIO:
+                rev.errores.append((n, 'Valor no reconocido (revise %, m³, volumen o actividad)')); continue
+            if pct is None and m3 is None:
+                rev.errores.append((n, 'Falta el avance (% o m³ acumulados)')); continue
+            if pct is not None and fraccion:
+                pct *= 100
+            if pct is not None and not 0 <= pct <= 150:
+                rev.errores.append((n, f'Avance fuera de rango: {pct_txt}')); continue
+            leidas.append((fecha, n, terrenos[codigo].id, tipo, pct, m3, proy))
+
+        # volúmenes proyectados informados en el mismo archivo (se aplican antes de calcular el %)
+        for fecha, n, tid, tipo, pct, m3, proy in leidas:
+            if proy is None:
+                continue
+            filas_t = acts['terreno_id'] == tid
+            if tipo:
+                acts.loc[filas_t & (acts['tipo'] == tipo), 'volumen_proyectado_m3'] = proy
+            else:
+                acts.loc[filas_t & (acts['tipo'] == 'corte'), 'volumen_proyectado_m3'] = proy
+                acts.loc[filas_t & (acts['tipo'] == 'escarpe'), 'volumen_proyectado_m3'] = 0.0
+        cambios_proy = {}
+        for _, a in acts.iterrows():
+            cambios_proy[int(a['id'])] = float(a['volumen_proyectado_m3'])
+
+        pendientes = []  # ajustes que este archivo va a crear (para encadenar varios cortes del mismo sitio)
+        for fecha, n, tid, tipo, pct, m3, proy in sorted(leidas):
+            sel = acts[(acts['terreno_id'] == tid) & ((acts['tipo'] == tipo) if tipo else True)]
+            proy_total = float(sel['volumen_proyectado_m3'].sum())
+            if m3 is None:
+                if proy_total <= 0:
+                    rev.errores.append((n, 'Para usar % el sitio necesita volumen proyectado (agregue la columna '
+                                           'volumen_proyectado_m3 o cárguelo antes)')); continue
+                m3 = pct / 100 * proy_total
+            aj = pd.concat([ajustes, pd.DataFrame(pendientes, columns=['actividad_id', 'fecha', 'volumen_m3'])])
+            actual = volumenes(acts, viajes, aj, hasta=fecha).set_index('id')['retirado_m3']
+            pesos = sel['volumen_proyectado_m3'] if proy_total > 0 else (sel['tipo'] == 'corte').astype(float)
+            for (_, a), peso in zip(sel.iterrows(), pesos):
+                objetivo = m3 * peso / pesos.sum()
+                delta = objetivo - float(actual[a['id']])
+                if abs(delta) >= 0.05:
+                    pendientes.append((int(a['id']), fecha, delta))
+                    rev.ops.append(dict(tipo='ajuste', actividad_id=int(a['id']), fecha=fecha, volumen_m3=round(delta, 3),
+                                        motivo=f'Avance informado al {fecha}: '
+                                               + (f'{pct:.1f} %' if pct is not None else f'{m3:.1f} m³')))
+        originales = {int(r.id): r.volumen_proyectado_m3 for r in con.execute(select(T.actividad))}
+        for aid, v in cambios_proy.items():
+            if abs(v - originales[aid]) > 1e-9:
+                rev.ops.insert(0, dict(tipo='proyectado', id=aid, volumen=v))
+        rev.resumen = dict(sitios=len({x[2] for x in leidas}), cortes_leidos=len(leidas),
+                           ajustes_de_volumen=sum(o['tipo'] == 'ajuste' for o in rev.ops),
+                           m3_ajustados=float(round(sum(o['volumen_m3'] for o in rev.ops if o['tipo'] == 'ajuste'), 1)),
+                           proyectados_actualizados=sum(o['tipo'] == 'proyectado' for o in rev.ops))
+
+    def aplicar(self, con, ops, carga_id):
+        for o in ops:
+            if o['tipo'] == 'proyectado':
+                con.execute(update(T.actividad).where(T.actividad.c.id == o['id']).values(volumen_proyectado_m3=o['volumen']))
+        ajustes = [dict(actividad_id=o['actividad_id'], fecha=o['fecha'], volumen_m3=o['volumen_m3'], motivo=o['motivo'],
+                        carga_id=carga_id) for o in ops if o['tipo'] == 'ajuste']
+        if ajustes:
+            con.execute(insert(T.ajuste), ajustes)
+
+
 class Ajustes(TipoArchivo):
     id = 'ajustes'
     titulo = 'Ajustes manuales de volumen (topografía)'
@@ -494,8 +606,8 @@ class Ajustes(TipoArchivo):
         con.execute(insert(T.ajuste), [dict(o, carga_id=carga_id) for o in ops])
 
 
-TIPOS = {t.id: t for t in (Viajes(), Gantt(), Volumenes(), Entregas(), Ajustes())}
-DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt}
+TIPOS = {t.id: t for t in (Viajes(), Avance(), Gantt(), Volumenes(), Entregas(), Ajustes())}
+DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste}
 
 
 def revisar(motor, tipo, contenido, nombre=''):
