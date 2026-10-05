@@ -27,22 +27,32 @@ def clave(s):
     return re.sub(r'[^a-z0-9]+', '_', s.replace('°', '').replace('º', '')).strip('_')
 
 
-def leer_tabla(contenido: bytes, nombre: str = '') -> pd.DataFrame:
-    """Lee CSV (; , o tab; UTF-8 o Latin-1) o Excel. Devuelve texto sin convertir, con columnas normalizadas."""
+def leer_tabla(contenido: bytes, nombre: str = '', conocidas=()) -> pd.DataFrame:
+    """Lee CSV (; , o tab; UTF-8 o Latin-1) o Excel. Devuelve texto sin convertir, con columnas normalizadas.
+    La fila de encabezados es la primera (de las 15 primeras) que contiene algún nombre de columna conocido."""
     if nombre.lower().endswith(('.xlsx', '.xls')) or contenido[:2] == b'PK':
-        df = pd.read_excel(io.BytesIO(contenido), dtype=object)
+        crudo = pd.read_excel(io.BytesIO(contenido), dtype=object, header=None)
     else:
         try:
             texto = contenido.decode('utf-8-sig')
         except UnicodeDecodeError:
             texto = contenido.decode('latin-1')
-        primera = texto.splitlines()[0] if texto.strip() else ''
-        sep = max([';', ',', '\t'], key=primera.count)
-        df = pd.read_csv(io.StringIO(texto), sep=sep, dtype=str, keep_default_na=False, skip_blank_lines=True)
-    df.columns = [clave(c) for c in df.columns]
+        lineas = [l for l in texto.splitlines() if l.strip()][:15]
+        sep = max([';', ',', '\t'], key=lambda c: sum(l.count(c) for l in lineas))
+        crudo = pd.read_csv(io.StringIO(texto), sep=sep, dtype=str, keep_default_na=False, skip_blank_lines=True,
+                            header=None, engine='python', on_bad_lines='skip')
+    fila_enc = 0
+    conocidas = set(conocidas)
+    for i in range(min(15, len(crudo))):
+        if conocidas & {clave(v) for v in crudo.iloc[i] if not vacio(v)}:
+            fila_enc = i
+            break
+    df = crudo.iloc[fila_enc + 1:].copy()
+    df.columns = [clave(c) if not vacio(c) else f'col_{j}' for j, c in enumerate(crudo.iloc[fila_enc])]
+    df.index = range(fila_enc + 1, fila_enc + 1 + len(df))  # para que _fila coincida con la fila del archivo
     df = df.dropna(how='all')
     df = df[~df.apply(lambda f: all(str(v).strip() in ('', 'nan', 'None', 'NaT') for v in f), axis=1)]
-    df.insert(0, '_fila', df.index + 2)  # número de fila como se ve en Excel (encabezado = fila 1)
+    df.insert(0, '_fila', df.index + 1)  # número de fila como se ve en Excel
     return df.reset_index(drop=True)
 
 
@@ -99,9 +109,11 @@ def norm_numero(v):
         return None
     if isinstance(v, (int, float)):
         return float(v)
-    s = str(v).strip().replace(' ', '')
+    s = str(v).strip().replace(' ', '').replace('m3', '').replace('m³', '')
     if ',' in s:
         s = s.replace('.', '').replace(',', '.')
+    elif re.fullmatch(r'-?\d{1,3}(\.\d{3})+', s):  # 1.250 = mil doscientos cincuenta
+        s = s.replace('.', '')
     try:
         return float(s)
     except ValueError:
@@ -170,6 +182,9 @@ def norm_estado(v, final='entregado'):
 
 
 # ---------------------------------------------------------------- tipos de archivo
+
+
+SITIO = ('sector', 'terreno', 'n_sitio', 'numero_sitio', 'sitio_n', 'n_de_sitio', 'lote', 'casa')
 
 
 @dataclass
@@ -304,7 +319,7 @@ class Gantt(TipoArchivo):
              'Opcional: actividad (escarpe / corte) para programarlas por separado, o zona '
              '(acceso / living / patio) para programar la entrega de una terraza. Reemplaza el programa anterior.')
     columnas = [
-        Columna('sitio', ('sector', 'terreno'), True, '15'),
+        Columna('sitio', SITIO, True, '15'),
         Columna('inicio', ('fecha_inicio', 'comienzo', 'desde'), True, '28/09/2026'),
         Columna('termino', ('fecha_termino', 'fin', 'hasta', 'fecha_fin'), True, '02/10/2026'),
         Columna('actividad', ('tipo', 'trabajo'), False, '', 'Opcional: escarpe o corte'),
@@ -343,12 +358,16 @@ class Volumenes(TipoArchivo):
     id = 'volumenes'
     titulo = 'Volúmenes proyectados y estado de escarpe / corte'
     modo = 'ACTUALIZA'
-    ayuda = 'Actualiza el volumen proyectado (m³) y/o el estado de cada actividad. Celdas vacías no se modifican.'
+    ayuda = ('Volumen proyectado (m³) por sitio. Si se indica la actividad (escarpe o corte) se actualiza esa; '
+             'si no, el volumen es el TOTAL del sitio (queda como corte y el escarpe en 0). '
+             'Opcional: estado. Celdas vacías no se modifican.')
     columnas = [
-        Columna('sitio', ('sector', 'terreno'), True, '15'),
-        Columna('actividad', ('tipo',), True, 'corte', 'escarpe o corte'),
-        Columna('volumen_proyectado_m3', ('proyectado', 'volumen', 'm3'), False, '180'),
-        Columna('estado', (), False, 'en proceso', 'sin intervenir / en proceso / terminado'),
+        Columna('sitio', SITIO, True, '15'),
+        Columna('volumen_proyectado_m3', ('volumen_proyectado', 'proyectado', 'volumen', 'volumen_m3', 'm3',
+                                          'm3_proyectados', 'cubicacion', 'volumen_total', 'total_m3', 'total'),
+                False, '180', 'Obligatoria salvo que solo se cambie el estado'),
+        Columna('actividad', ('tipo', 'trabajo'), False, '', 'Opcional: escarpe o corte (vacío = total del sitio)'),
+        Columna('estado', (), False, '', 'Opcional: sin intervenir / en proceso / terminado'),
     ]
 
     def validar(self, con, df, rev):
@@ -363,17 +382,28 @@ class Volumenes(TipoArchivo):
             est = norm_estado(valor(f, c['estado']), 'terminado')
             if codigo in (None, VACIO) or codigo not in terrenos:
                 rev.errores.append((n, f'Sitio "{valor(f, c["sitio"])}" no existe')); continue
-            if tipo in (None, VACIO):
-                rev.errores.append((n, 'Actividad no reconocida (escarpe o corte)')); continue
+            if tipo is VACIO:
+                rev.errores.append((n, f'Actividad "{valor(f, c["actividad"])}" no reconocida (escarpe o corte)')); continue
             if vol is VACIO or (vol is not None and vol < 0):
-                rev.errores.append((n, 'Volumen inválido')); continue
+                rev.errores.append((n, f'Volumen inválido: "{valor(f, c["volumen_proyectado_m3"])}"')); continue
             if est is VACIO:
-                rev.errores.append((n, 'Estado no reconocido')); continue
-            a = acts[(terrenos[codigo].id, tipo)]
-            rev.ops.append(dict(id=a.id, volumen=a.volumen_proyectado_m3 if vol is None else vol,
-                                estado=est or a.estado, cambio_estado=bool(est and est != a.estado)))
-        rev.resumen = dict(actividades_actualizadas=len(rev.ops),
-                           m3_proyectados=round(sum(o['volumen'] for o in rev.ops), 1))
+                rev.errores.append((n, f'Estado "{valor(f, c["estado"])}" no reconocido')); continue
+            if vol is None and est is None:
+                rev.errores.append((n, 'Fila sin volumen ni estado')); continue
+            tid = terrenos[codigo].id
+            if tipo is None:  # total del sitio
+                for t, v in (('corte', vol), ('escarpe', 0.0 if vol is not None else None)):
+                    a = acts[(tid, t)]
+                    rev.ops.append(dict(id=a.id, volumen=a.volumen_proyectado_m3 if v is None else v,
+                                        estado=est or a.estado, cambio_estado=bool(est and est != a.estado)))
+            else:
+                a = acts[(tid, tipo)]
+                rev.ops.append(dict(id=a.id, volumen=a.volumen_proyectado_m3 if vol is None else vol,
+                                    estado=est or a.estado, cambio_estado=bool(est and est != a.estado)))
+        terreno_de = {r.id: r.terreno_id for r in acts.values()}
+        rev.resumen = dict(sitios=len({terreno_de[o['id']] for o in rev.ops}),
+                           actividades_actualizadas=len(rev.ops),
+                           m3_proyectados_en_archivo=round(sum(o['volumen'] for o in rev.ops), 1))
 
     def aplicar(self, con, ops, carga_id):
         for o in ops:
@@ -390,7 +420,7 @@ class Entregas(TipoArchivo):
     modo = 'ACTUALIZA'
     ayuda = 'Estado de acceso, living y fondo de patio de cada sitio. Si se marca entregado sin fecha, se usa hoy.'
     columnas = [
-        Columna('sitio', ('sector', 'terreno'), True, '15'),
+        Columna('sitio', SITIO, True, '15'),
         Columna('zona', ('terraza',), True, 'acceso', 'acceso / living / patio (unica en edificios)'),
         Columna('estado', (), True, 'entregado', 'sin intervenir / en proceso / entregado'),
         Columna('fecha_entrega', ('fecha',), False, '29/09/2026'),
@@ -434,7 +464,7 @@ class Ajustes(TipoArchivo):
     modo = 'SUMA'
     ayuda = 'Suma (o resta con número negativo) m³ retirados a una actividad, por ejemplo tras una topografía.'
     columnas = [
-        Columna('sitio', ('sector', 'terreno'), True, '15'),
+        Columna('sitio', SITIO, True, '15'),
         Columna('actividad', ('tipo',), True, 'corte'),
         Columna('fecha', (), True, '30/09/2026'),
         Columna('volumen_m3', ('volumen', 'm3'), True, '35,5'),
@@ -472,7 +502,7 @@ def revisar(motor, tipo, contenido, nombre=''):
     t = TIPOS[tipo]
     rev = Revision()
     try:
-        df = leer_tabla(contenido, nombre)
+        df = leer_tabla(contenido, nombre, {k for c in t.columnas for k in (c.campo, *c.alias)})
     except Exception as e:  # archivo corrupto o formato desconocido
         rev.ok = False
         rev.errores.append((None, f'No se pudo leer el archivo: {e}'))

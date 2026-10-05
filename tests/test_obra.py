@@ -206,3 +206,29 @@ def test_proyeccion_sin_avance_no_inventa_fecha():
     real = pd.DataFrame({'fecha': pd.date_range('2026-10-01', '2026-10-20'), 'pct': [10.0] * 20, 'm3': [10.0] * 20})
     p = C.proyeccion(real, pd.DataFrame(columns=['fecha', 'pct']), '2026-10-20', 14)
     assert p['ritmo'] == 0 and p['fecha_termino_estimada'] is None and p['serie'].empty
+
+
+def test_volumen_total_por_sitio_sin_actividad(motor):
+    rev = cargar(motor, 'volumenes', 'N° Sitio;VOLUMEN_M3\n1;1.250\n2;980,5\nSitio 3;300\n'.encode())
+    assert not rev.errores and rev.resumen['sitios'] == 3
+    a = tablas(motor)['actividad'].set_index(['terreno_id', 'tipo'])['volumen_proyectado_m3']
+    assert a[(1, 'corte')] == 1250 and a[(1, 'escarpe')] == 0
+    assert a[(2, 'corte')] == 980.5 and a[(3, 'corte')] == 300
+
+
+def test_excel_con_titulo_sobre_los_encabezados(motor):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as w:
+        pd.DataFrame([['CUBICACIÓN LOMA LA CRUZ', None], [None, None], ['Sitio', 'Cubicación'], [15, 210.5], [16, 199]]
+                     ).to_excel(w, index=False, header=False)
+    rev = cargar(motor, 'volumenes', buf.getvalue(), 'cubicacion.xlsx')
+    assert rev.ok and not rev.errores, rev.errores
+    a = tablas(motor)['actividad'].set_index(['terreno_id', 'tipo'])['volumen_proyectado_m3']
+    assert a[(15, 'corte')] == 210.5 and a[(16, 'corte')] == 199
+
+
+def test_volumen_por_actividad_sigue_funcionando(motor):
+    rev = cargar(motor, 'volumenes', b'sitio;actividad;volumen_proyectado_m3\n1;escarpe;80\n1;corte;200\n1;relleno;5\n')
+    assert [f for f, _ in rev.errores] == [4]
+    a = tablas(motor)['actividad'].set_index(['terreno_id', 'tipo'])['volumen_proyectado_m3']
+    assert a[(1, 'escarpe')] == 80 and a[(1, 'corte')] == 200

@@ -380,8 +380,12 @@ with tabs['Tickets']:
 
 if ADMIN:
     with tabs['Cargar datos']:
-        st.markdown('Suba archivos **CSV** (separados por `;` o `,`) o **Excel**. Primero se **revisan** y se muestra '
-                    'qué va a cambiar; los datos se guardan solo al **confirmar**.')
+        st.markdown('Suba archivos **CSV** (separados por `;` o `,`) o **Excel**. Pasos: elegir archivo → '
+                    '**Revisar archivo** → **Confirmar carga**. Nada se guarda hasta confirmar.')
+        if 'ultima_carga' in st.session_state:
+            titulo, nombre, resumen = st.session_state.ultima_carga
+            st.success(f'✅ Carga guardada: **{titulo}** ({nombre}) — '
+                       + ' · '.join(f"{k.replace('_', ' ')}: {v}" for k, v in resumen.items()))
         for tipo in I.TIPOS.values():
             with st.expander(f'{tipo.titulo} · {tipo.modo}', expanded=tipo.id == 'viajes'):
                 st.caption(tipo.ayuda)
@@ -410,7 +414,8 @@ if ADMIN:
                     for _, m in rev.errores:
                         st.error(m)
                     continue
-                st.markdown(f'**Revisión: {rev.filas} filas leídas** (aún no se guarda nada)')
+                st.markdown(f'**Revisión: {rev.filas} filas leídas** — :orange[aún no se guarda nada, '
+                            f'presione **Confirmar carga** abajo]')
                 st.dataframe(pd.DataFrame([rev.resumen]).rename(columns=lambda c: c.replace('_', ' ')),
                              hide_index=True, use_container_width=True)
                 if rev.errores:
@@ -422,7 +427,7 @@ if ADMIN:
                 if rev.hay_cambios and st.button('Confirmar carga', type='primary', key=f'ok_{tipo.id}'):
                     I.aplicar(MOTOR, tipo.id, rev, archivo.name)
                     st.session_state.pop(clave_rev, None)
-                    st.toast('Carga guardada', icon='✅')
+                    st.session_state.ultima_carga = (tipo.titulo, archivo.name, rev.resumen)
                     st.rerun()
                 elif not rev.hay_cambios:
                     st.caption('No hay filas nuevas para guardar.')
