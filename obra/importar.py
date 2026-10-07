@@ -562,7 +562,7 @@ class Avance(TipoArchivo):
                 delta = objetivo - float(actual[a['id']])
                 if abs(delta) >= 0.05:
                     pendientes.append((int(a['id']), fecha, delta))
-                    rev.ops.append(dict(tipo='ajuste', actividad_id=int(a['id']), fecha=fecha, volumen_m3=round(delta, 3),
+                    rev.ops.append(dict(tipo='ajuste', actividad_id=int(a['id']), fecha=fecha, volumen_m3=round(float(delta), 3),
                                         motivo=f'Avance informado al {fecha}: '
                                                + (f'{pct:.1f} %' if pct is not None else f'{m3:.1f} m³')))
         originales = {int(r.id): r.volumen_proyectado_m3 for r in con.execute(select(T.actividad))}

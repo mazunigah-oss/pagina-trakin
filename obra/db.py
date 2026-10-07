@@ -126,6 +126,24 @@ historial = Table(
 )
 
 
+def _adaptar_numpy():
+    """psycopg2 no entiende los números de numpy/pandas: np.float64 se envía como el texto
+    'np.float64(1.5)' (PostgreSQL responde 'schema "np" does not exist') y np.int64 no se puede enviar.
+    Se registran para que se envíen como números normales."""
+    try:
+        import numpy as np
+        from psycopg2.extensions import AsIs, register_adapter
+    except ImportError:
+        return
+
+    def numero(v):
+        return AsIs('NULL') if v != v else AsIs(repr(v.item()))
+
+    for tipo in (np.float64, np.float32, np.int64, np.int32, np.int16, np.int8, np.uint64, np.uint32):
+        register_adapter(tipo, numero)
+    register_adapter(np.bool_, lambda v: AsIs('TRUE' if v else 'FALSE'))
+
+
 def _normalizar_url(url):
     # Supabase/Neon/Heroku entregan postgres:// ; SQLAlchemy necesita postgresql+psycopg2://
     if url.startswith('postgres://'):
@@ -138,6 +156,8 @@ def _normalizar_url(url):
 def crear_motor(url=None):
     url = _normalizar_url(url) if url else f"sqlite:///{RAIZ / 'data' / 'obra.db'}"
     motor = create_engine(url, pool_pre_ping=True, future=True)
+    if motor.dialect.name == 'postgresql':
+        _adaptar_numpy()
     if motor.dialect.name == 'sqlite':
         @event.listens_for(motor, 'connect')
         def _fk(con, _):

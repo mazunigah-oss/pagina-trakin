@@ -1,4 +1,5 @@
 import io
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -23,7 +24,13 @@ CSV_MAQUINA = """TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO
 
 @pytest.fixture
 def motor(tmp_path):
-    return T.crear_motor(f'sqlite:///{tmp_path / "t.db"}')
+    """SQLite por defecto. Con TEST_POSTGRES_URL las pruebas corren contra PostgreSQL (como en Supabase)."""
+    url = os.environ.get('TEST_POSTGRES_URL')
+    if not url:
+        return T.crear_motor(f'sqlite:///{tmp_path / "t.db"}')
+    from sqlalchemy import create_engine
+    T.meta.drop_all(create_engine(T._normalizar_url(url)))
+    return T.crear_motor(url)
 
 
 def cargar(motor, tipo, contenido, nombre='x.csv'):
