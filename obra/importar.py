@@ -146,6 +146,8 @@ def norm_actividad(v):
     s = texto(v)
     if not s:
         return None
+    if 'adicional' in s or 'botadero' in s:
+        return 'adicional'
     if 'escarpe' in s:  # incluye "descarpe"
         return 'escarpe'
     if re.search(r'corte|subterr|excav', s):
@@ -330,6 +332,7 @@ class Gantt(TipoArchivo):
     def validar(self, con, df, rev):
         terrenos = mapa_terrenos(con)
         c = {x.campo: x for x in self.columnas}
+        sin_fechas = []
         for f in df.to_dict('records'):
             n = f['_fila']
             codigo = norm_terreno(valor(f, c['sitio']))
@@ -337,6 +340,8 @@ class Gantt(TipoArchivo):
             act, zon = norm_actividad(valor(f, c['actividad'])), norm_zona(valor(f, c['zona']))
             if codigo in (None, VACIO) or codigo not in terrenos:
                 rev.errores.append((n, f'Sitio "{valor(f, c["sitio"])}" no existe')); continue
+            if ini is None and fin is None:
+                sin_fechas.append(codigo); continue
             if ini in (None, VACIO) or fin in (None, VACIO):
                 rev.errores.append((n, 'Fechas de inicio o término inválidas')); continue
             if fin < ini:
@@ -345,6 +350,9 @@ class Gantt(TipoArchivo):
                 rev.errores.append((n, 'Actividad o zona no reconocida')); continue
             rev.ops.append(dict(terreno_id=terrenos[codigo].id, actividad=act, zona=zon, inicio=ini, termino=fin,
                                 texto=None if vacio(valor(f, c['tarea'])) else str(valor(f, c['tarea']))[:200]))
+        if sin_fechas:
+            rev.avisos.append((None, f'{len(sin_fechas)} filas sin fechas quedan fuera del programa: '
+                                     + ', '.join(sorted(set(sin_fechas)))))
         anteriores = con.execute(select(T.gantt.c.id)).all()
         rev.resumen = dict(tareas_nuevas=len(rev.ops), sitios=len({o['terreno_id'] for o in rev.ops}),
                            reemplaza_tareas_anteriores=len(anteriores))
@@ -472,11 +480,13 @@ class Avance(TipoArchivo):
         Columna('avance_pct', ('avance', 'porcentaje', 'pct', 'avance_porcentaje', 'porcentaje_avance', 'avance_real'),
                 False, '45', '% de avance del sitio (45, 45% o 0,45)'),
         Columna('m3_acumulados', ('m3_movidos', 'cantidad', 'cantidad_movida', 'volumen_movido', 'm3_a_la_fecha',
-                                  'acumulado', 'movido', 'm3_ejecutados', 'ejecutado'),
+                                  'acumulado', 'movido', 'm3_ejecutados', 'ejecutado', 'trasladado_m3', 'trasladado'),
                 False, '', 'Alternativa al %: m³ movidos a la fecha'),
-        Columna('volumen_proyectado_m3', ('volumen_proyectado', 'volumen_total', 'proyectado', 'cubicacion', 'total_m3'),
-                False, '', 'Opcional: actualiza el volumen proyectado del sitio'),
-        Columna('actividad', ('tipo', 'trabajo'), False, '', 'Opcional: escarpe o corte (vacío = sitio completo)'),
+        Columna('volumen_proyectado_m3', ('volumen_proyectado', 'volumen_total', 'proyectado', 'cubicacion', 'total_m3',
+                                          'esponjado_m3', 'volumen_esponjado', 'adicional_a_botadero_m3'),
+                False, '', 'Opcional: actualiza el volumen proyectado (esponjado, el que trasladan los camiones)'),
+        Columna('actividad', ('tipo', 'trabajo'), False, '',
+                'Opcional: escarpe, corte o adicional (botadero). Vacío = escarpe + corte del sitio'),
     ]
 
     def validar(self, con, df, rev):
@@ -493,7 +503,7 @@ class Avance(TipoArchivo):
         fraccion = bool(pcts) and all(isinstance(x, float) and 0 <= x <= 1 for x in pcts) and \
             not any('%' in str(valor(f, c['avance_pct']) or '') for f in filas)
         hoy = hoy_chile()
-        leidas = []
+        leidas, sin_avance = [], []
         for f in filas:
             n = f['_fila']
             codigo = norm_terreno(valor(f, c['sitio']))
@@ -509,8 +519,10 @@ class Avance(TipoArchivo):
             tipo = norm_actividad(valor(f, c['actividad']))
             if VACIO in (pct, m3, proy) or tipo is VACIO:
                 rev.errores.append((n, 'Valor no reconocido (revise %, m³, volumen o actividad)')); continue
-            if pct is None and m3 is None:
+            if pct is None and m3 is None and proy is None:
                 rev.errores.append((n, 'Falta el avance (% o m³ acumulados)')); continue
+            if pct is None and m3 is None:  # solo volumen: se carga el proyectado, sin avance
+                sin_avance.append(codigo)
             if pct is not None and fraccion:
                 pct *= 100
             if pct is not None and not 0 <= pct <= 150:
@@ -532,8 +544,10 @@ class Avance(TipoArchivo):
             cambios_proy[int(a['id'])] = float(a['volumen_proyectado_m3'])
 
         pendientes = []  # ajustes que este archivo va a crear (para encadenar varios cortes del mismo sitio)
-        for fecha, n, tid, tipo, pct, m3, proy in sorted(leidas):
-            sel = acts[(acts['terreno_id'] == tid) & ((acts['tipo'] == tipo) if tipo else True)]
+        for fecha, n, tid, tipo, pct, m3, proy in sorted(leidas, key=lambda x: x[:2]):
+            if pct is None and m3 is None:
+                continue
+            sel = acts[(acts['terreno_id'] == tid) & ((acts['tipo'] == tipo) if tipo else (acts['tipo'] != 'adicional'))]
             proy_total = float(sel['volumen_proyectado_m3'].sum())
             if m3 is None:
                 if proy_total <= 0:
@@ -555,7 +569,9 @@ class Avance(TipoArchivo):
         for aid, v in cambios_proy.items():
             if abs(v - originales[aid]) > 1e-9:
                 rev.ops.insert(0, dict(tipo='proyectado', id=aid, volumen=v))
-        rev.resumen = dict(sitios=len({x[2] for x in leidas}), cortes_leidos=len(leidas),
+        if sin_avance:
+            rev.avisos.append((None, f'Sin dato de avance (solo se carga el volumen): {", ".join(sin_avance)}'))
+        rev.resumen = dict(sitios=len({x[2] for x in leidas}), cortes_leidos=len(leidas) - len(sin_avance),
                            ajustes_de_volumen=sum(o['tipo'] == 'ajuste' for o in rev.ops),
                            m3_ajustados=float(round(sum(o['volumen_m3'] for o in rev.ops if o['tipo'] == 'ajuste'), 1)),
                            proyectados_actualizados=sum(o['tipo'] == 'proyectado' for o in rev.ops))
@@ -568,6 +584,85 @@ class Avance(TipoArchivo):
                         carga_id=carga_id) for o in ops if o['tipo'] == 'ajuste']
         if ajustes:
             con.execute(insert(T.ajuste), ajustes)
+
+
+class Rellenos(TipoArchivo):
+    id = 'rellenos'
+    titulo = 'Rellenos compactados y densidades'
+    modo = 'REEMPLAZA'
+    ayuda = ('Rellenos en capas de ~0,25 m por sitio: m³ de corte y relleno, capas por zona (cada capa = una '
+             'densidad) y entrega. "P" = pendiente. Un sitio puede tener varias filas. Reemplaza la carga anterior.')
+    columnas = [
+        Columna('sitio', SITIO, True, '30'),
+        Columna('corte_m3', ('corte',), False, '287,9'),
+        Columna('relleno_m3', ('relleno',), False, '287,9', 'm³ o P (pendiente)'),
+        Columna('capas_acceso', (), False, '3'),
+        Columna('capas_living', (), False, '2'),
+        Columna('capas_calicata', (), False, ''),
+        Columna('entrega', ('estado',), False, 'OK'),
+    ]
+
+    def validar(self, con, df, rev):
+        terrenos = mapa_terrenos(con)
+        c = {x.campo: x for x in self.columnas}
+        for f in df.to_dict('records'):
+            n = f['_fila']
+            codigo = norm_terreno(valor(f, c['sitio']))
+            if codigo in (None, VACIO) or codigo not in terrenos:
+                rev.errores.append((n, f'Sitio "{valor(f, c["sitio"])}" no existe')); continue
+            fila, pend_rel, pend_capas, malo = {}, False, False, None
+            for campo in ('corte_m3', 'relleno_m3', 'capas_acceso', 'capas_living', 'capas_calicata'):
+                v = valor(f, c[campo])
+                if not vacio(v) and str(v).strip().upper() == 'P':
+                    pend_rel |= campo == 'relleno_m3'
+                    pend_capas |= campo.startswith('capas')
+                    fila[campo] = None
+                    continue
+                x = norm_numero(v)
+                if x is VACIO or (x is not None and x < 0):
+                    malo = campo
+                    break
+                fila[campo] = int(round(x)) if campo.startswith('capas') and x is not None else x
+            if malo:
+                rev.errores.append((n, f'Valor inválido en {malo}: "{valor(f, c[malo])}"')); continue
+            ent = valor(f, c['entrega'])
+            rev.ops.append(dict(terreno_id=terrenos[codigo].id, relleno_pendiente=int(pend_rel),
+                                capas_pendiente=int(pend_capas), entrega=None if vacio(ent) else str(ent).strip()[:20],
+                                **fila))
+        capas = sum((o.get(k) or 0) for o in rev.ops for k in ('capas_acceso', 'capas_living', 'capas_calicata'))
+        rev.resumen = dict(registros=len(rev.ops), sitios=len({o['terreno_id'] for o in rev.ops}),
+                           corte_m3=round(sum(o.get('corte_m3') or 0 for o in rev.ops), 1),
+                           relleno_m3=round(sum(o.get('relleno_m3') or 0 for o in rev.ops), 1),
+                           densidades=capas)
+
+    def aplicar(self, con, ops, carga_id):
+        con.execute(delete(T.relleno))
+        con.execute(insert(T.relleno), [dict(o, carga_id=carga_id) for o in ops])
+
+
+class Hitos(TipoArchivo):
+    id = 'hitos'
+    titulo = 'Hitos de la obra'
+    modo = 'REEMPLAZA'
+    ayuda = 'Fechas clave que se marcan en la curva de avance y en la carta Gantt. Reemplaza los hitos anteriores.'
+    columnas = [
+        Columna('hito', ('nombre', 'descripcion', 'evento'), True, 'Inicio obra gruesa casas'),
+        Columna('fecha', ('semana', 'semana_del'), True, '02/11/2026'),
+    ]
+
+    def validar(self, con, df, rev):
+        c = {x.campo: x for x in self.columnas}
+        for f in df.to_dict('records'):
+            fecha = norm_fecha(valor(f, c['fecha']))
+            nombre = valor(f, c['hito'])
+            if vacio(nombre) or fecha in (None, VACIO):
+                rev.errores.append((f['_fila'], 'Falta el nombre o la fecha es inválida')); continue
+            rev.ops.append(dict(nombre=str(nombre).strip()[:120], fecha=fecha))
+        rev.resumen = dict(hitos=len(rev.ops))
+
+    def aplicar(self, con, ops, carga_id):
+        con.execute(delete(T.hito))
+        con.execute(insert(T.hito), [dict(o, carga_id=carga_id) for o in ops])
 
 
 class Ajustes(TipoArchivo):
@@ -606,8 +701,9 @@ class Ajustes(TipoArchivo):
         con.execute(insert(T.ajuste), [dict(o, carga_id=carga_id) for o in ops])
 
 
-TIPOS = {t.id: t for t in (Viajes(), Avance(), Gantt(), Volumenes(), Entregas(), Ajustes())}
-DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste}
+TIPOS = {t.id: t for t in (Viajes(), Avance(), Gantt(), Volumenes(), Entregas(), Ajustes(), Rellenos(), Hitos())}
+DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste,
+               'rellenos': T.relleno, 'hitos': T.hito}
 
 
 def revisar(motor, tipo, contenido, nombre=''):

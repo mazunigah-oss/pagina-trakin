@@ -55,6 +55,9 @@ def fecha_cl(iso):
     return '—' if not iso or iso != iso else '-'.join(reversed(str(iso)[:10].split('-')))
 
 
+NOMBRE_ACT = {'escarpe': 'Escarpe', 'corte': 'Corte / excavación', 'adicional': 'Adicional a botadero'}
+
+
 def pastilla(estado):
     return f':{ {"entregado": "green", "terminado": "green", "al_dia": "green", "en_proceso": "orange", "atrasado": "red", "adelantado": "blue"}.get(estado, "gray")}-badge[{NOMBRES.get(estado, "Sin programa")}]'
 
@@ -98,6 +101,8 @@ zonas = C.leer(MOTOR, 'zona').merge(terrenos[['id', 'codigo', 'nombre', 'tipo', 
 viajes = C.leer(MOTOR, 'viaje')
 ajustes = C.leer(MOTOR, 'ajuste')
 gantt = C.leer(MOTOR, 'gantt')
+hitos = C.leer(MOTOR, 'hito').sort_values('fecha')
+rellenos = C.leer(MOTOR, 'relleno')
 acts = C.volumenes(C.leer(MOTOR, 'actividad'), viajes, ajustes, hasta=dia)
 viajes_hasta = viajes[viajes['fecha'] <= dia]
 prog_t = C.programa_terrenos(terrenos, acts, gantt, dia)
@@ -106,7 +111,7 @@ prog_z = C.programa_zonas(zonas, gantt, dia)
 st.title('Avance movimiento de tierra')
 st.caption(f'Loma La Cruz · 48 sitios · Etapas 1 y 2 · datos al {fecha_cl(dia)}')
 
-pestanas = ['Resumen', 'Curva de avance', 'Entregas', 'Programa', 'Movimiento de tierra', 'Tickets']
+pestanas = ['Resumen', 'Curva de avance', 'Entregas', 'Programa', 'Movimiento de tierra', 'Rellenos', 'Tickets']
 if ADMIN:
     pestanas += ['Cargar datos', 'Editar estados']
 tabs = dict(zip(pestanas, st.tabs(pestanas)))
@@ -169,9 +174,21 @@ with tabs['Resumen']:
 # ---------------------------------------------------------------- Curva de avance
 
 with tabs['Curva de avance']:
-    total_proy = float(acts['volumen_proyectado_m3'].sum())
+    sitios_prog = sorted(gantt.loc[gantt['zona'].isna(), 'terreno_id'].unique()) if not gantt.empty else []
+    opciones = ([f'Sitios con programa ({len(sitios_prog)})'] if sitios_prog else []) + ['Toda la obra']
+    alcance = st.segmented_control('Alcance', opciones, default=opciones[0],
+                                   help='La curva programada solo existe para los sitios que están en la carta Gantt. '
+                                        '"Sitios con programa" compara real y programado sobre los mismos sitios. '
+                                        '"Toda la obra" usa el volumen de todos los sitios (incluye los tickets sin sitio).')
+    ids_alcance = sitios_prog if alcance and alcance.startswith('Sitios') else None
+    acts_alc = acts if ids_alcance is None else acts[acts['terreno_id'].isin(ids_alcance)]
+    total_proy = float(acts_alc['volumen_proyectado_m3'].sum())
     prog = C.curva_programada(gantt, acts)
-    real = C.curva_real(viajes, ajustes, total_proy, dia, inicio=None if gantt.empty else gantt['inicio'].min())
+    real = C.curva_real(viajes, ajustes, total_proy, dia, inicio=None if gantt.empty else gantt['inicio'].min(),
+                        actividades=acts, terreno_ids=ids_alcance)
+    if ids_alcance is None and sitios_prog:
+        prog = prog.assign(pct=prog['pct'] * float(acts[acts['terreno_id'].isin(sitios_prog)]['volumen_proyectado_m3'].sum())
+                           / total_proy) if total_proy > 0 else prog
     if total_proy <= 0:
         st.info('Para calcular el % de avance hay que cargar los volúmenes proyectados (Cargar datos → Volúmenes '
                 'proyectados). Mientras tanto la curva programada se calcula con el mismo peso para cada sitio.')
@@ -191,8 +208,8 @@ with tabs['Curva de avance']:
     c2.metric('Avance programado a la fecha', f"{num(p['avance_programado'], 1)} %")
     c3.metric('Término estimado', fecha_ts(p['fecha_termino_estimada']),
               None if p['dias_desfase'] is None else
-              (f"{p['dias_desfase']} días de atraso" if p['dias_desfase'] > 0 else
-               f"{-p['dias_desfase']} días antes" if p['dias_desfase'] < 0 else 'a tiempo'),
+              (f"{p['dias_desfase']} día{'s' if p['dias_desfase'] != 1 else ''} de atraso" if p['dias_desfase'] > 0 else
+               f"{-p['dias_desfase']} día{'s' if p['dias_desfase'] != -1 else ''} antes" if p['dias_desfase'] < 0 else 'a tiempo'),
               delta_color='inverse' if (p['dias_desfase'] or 0) > 0 else 'normal',
               help='Fecha en que se llegaría al 100 % si se mantiene el ritmo actual.')
     c4.metric(f"Avance al {fecha_ts(p['fecha_termino_programada'])}", f"{num(p['pct_a_termino_programado'], 1)} %",
@@ -207,8 +224,9 @@ with tabs['Curva de avance']:
                       f"({num(nec_m3, 0)} m³/día)")
             if p['ritmo'] > 0:
                 veces = p['ritmo_necesario'] / p['ritmo']
-                texto += (f" → hay que acelerar **{num(100 * (veces - 1))} %**" if veces > 1 else
-                          f" → alcanza con el **{num(100 * veces)} %** del ritmo actual")
+                texto += (f" → hay que acelerar **{num(100 * (veces - 1))} %**" if veces > 1.02 else
+                          f" → alcanza con el **{num(100 * veces)} %** del ritmo actual" if veces < 0.98 else
+                          ' → hay que mantener el ritmo actual, sin margen')
         st.markdown(texto)
         if p['ritmo'] <= 0 and (p['avance_real'] or 0) < 100:
             st.warning(f'No hubo avance en los últimos {ventana_dias} días: con ese ritmo la obra no termina.')
@@ -238,6 +256,10 @@ with tabs['Curva de avance']:
                                  name='Término estimado', hoverinfo='skip'))
     fig.add_vline(x=pd.Timestamp(dia), line_color='#1d2320', line_dash='dash', line_width=1)
     fig.add_annotation(x=pd.Timestamp(dia), y=104, text='hoy', showarrow=False, font=dict(size=11))
+    for i, h in enumerate(hitos.itertuples()):
+        fig.add_vline(x=pd.Timestamp(h.fecha), line_color='#3b7dd8', line_dash='dot', line_width=1)
+        fig.add_annotation(x=pd.Timestamp(h.fecha), y=95 - 7 * (i % 3), text=h.nombre, showarrow=False,
+                           font=dict(size=10, color='#3b7dd8'), xanchor='left', xshift=3)
     fig.add_hline(y=100, line_color='#c9cfca', line_width=1)
     fig.update_yaxes(title='% de avance', range=[0, 110], ticksuffix=' %')
     fig.update_xaxes(title='', tickformat='%d/%m/%y')
@@ -326,6 +348,10 @@ with tabs['Programa']:
             fig = px.timeline(g.sort_values('inicio'), x_start='Inicio', x_end='Fin', y='Sitio', color='Actividad',
                               color_discrete_sequence=['#2f6d4f', '#e9a23b', '#3b7dd8'])
             fig.add_vline(x=pd.Timestamp(dia), line_color='#d64545', line_dash='dash')
+            for h in hitos.itertuples():
+                fig.add_vline(x=pd.Timestamp(h.fecha), line_color='#3b7dd8', line_dash='dot')
+                fig.add_annotation(x=pd.Timestamp(h.fecha), y=1, yref='paper', text=h.nombre, showarrow=False,
+                                   font=dict(size=10, color='#3b7dd8'), xanchor='left', yanchor='bottom')
             fig.update_yaxes(autorange='reversed', title='')
             fig.update_layout(height=max(300, 16 * g['Sitio'].nunique()), margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig, use_container_width=True)
@@ -350,8 +376,11 @@ with tabs['Movimiento de tierra']:
     with panel:
         if sel:
             encabezado_sitio(sel)
-            for a in acts[acts['terreno_id'] == sel].itertuples():
-                st.markdown(f"**{'Escarpe' if a.tipo == 'escarpe' else 'Corte'}** {pastilla(a.estado)}")
+            visibles = acts[(acts['terreno_id'] == sel) & ((acts['volumen_proyectado_m3'] > 0) | (acts['retirado_m3'] != 0))]
+            if visibles.empty:
+                st.caption('Sin volumen proyectado ni movimientos.')
+            for a in visibles.itertuples():
+                st.markdown(f"**{NOMBRE_ACT[a.tipo]}** {pastilla(a.estado)}")
                 st.dataframe(pd.DataFrame({'m³': [a.volumen_proyectado_m3, a.directo_m3, a.prorrateo_m3, a.ajustes_m3, a.retirado_m3]},
                                           index=['Proyectado', 'Tickets del sitio', 'Prorrateo General', 'Ajustes', 'Retirado']),
                              use_container_width=True, column_config={'m³': st.column_config.NumberColumn(format='%.1f')})
@@ -359,6 +388,70 @@ with tabs['Movimiento de tierra']:
                     st.progress(min(1.0, float(a.avance)), text=f'{num(100 * a.avance, 1)} %')
     st.caption('m³ retirados = tickets del sitio + prorrateo de los tickets sin sitio (General, repartidos entre las '
                'actividades en proceso según su volumen proyectado) + ajustes manuales. Las anulaciones restan.')
+
+# ---------------------------------------------------------------- Rellenos
+
+with tabs['Rellenos']:
+    if rellenos.empty:
+        st.info('Aún no hay registros de rellenos y densidades. El administrador puede cargarlos en "Cargar datos".')
+    else:
+        r = rellenos.copy()
+        capas = ['capas_acceso', 'capas_living', 'capas_calicata']
+        r['densidades'] = r[capas].fillna(0).sum(axis=1)
+        suma = lambda x: x.sum(min_count=1)  # noqa: E731 - celdas vacías quedan vacías, no 0
+        por_sitio = r.groupby('terreno_id').agg(corte_m3=('corte_m3', suma), relleno_m3=('relleno_m3', suma),
+                                                capas_acceso=('capas_acceso', suma), capas_living=('capas_living', suma),
+                                                capas_calicata=('capas_calicata', suma), densidades=('densidades', 'sum'),
+                                                pendiente=('relleno_pendiente', lambda x: bool(x.max())),
+                                                pend_capas=('capas_pendiente', lambda x: bool(x.max())),
+                                                ok=('entrega', lambda x: x.fillna('').str.upper().eq('OK').all()))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric('Corte', f"{num(r['corte_m3'].sum(), 1)} m³")
+        c2.metric('Relleno compactado', f"{num(r['relleno_m3'].sum(), 1)} m³")
+        c3.metric('Densidades (capas de 0,25 m)', num(r['densidades'].sum()),
+                  f"acceso {num(r['capas_acceso'].sum())} · living {num(r['capas_living'].sum())} · calicata "
+                  f"{num(r['capas_calicata'].sum())}", delta_color='off')
+        c4.metric('Sitios entregados', f"{int(por_sitio['ok'].sum())} de {len(por_sitio)}")
+
+        def estado_relleno(tid):
+            if tid not in por_sitio.index:
+                return None
+            f = por_sitio.loc[tid]
+            return 'entregado' if f['ok'] and not f['pendiente'] else 'en_proceso'
+
+        def hover_relleno(z):
+            if z['terreno_id'] not in por_sitio.index:
+                return f"<b>{z['nombre']}</b><br>Sin registro de rellenos"
+            f = por_sitio.loc[z['terreno_id']]
+            return (f"<b>{z['nombre']}</b><br>Relleno: {num(f['relleno_m3'], 1)} m³" + (' (pendiente)' if f['pendiente'] else '')
+                    + f"<br>Densidades: {num(f['densidades'])} (acceso {num(f['capas_acceso'])}, living "
+                      f"{num(f['capas_living'])}, calicata {num(f['capas_calicata'])})"
+                    + f"<br>Entrega: {'OK' if f['ok'] else 'pendiente'}")
+
+        mapa, tabla = st.columns([3, 2])
+        with mapa:
+            st.plotly_chart(figura(GEO, zonas, lambda z: COLORES[estado_relleno(z['terreno_id'])], hover_relleno,
+                                   [(COLORES['entregado'], 'Entregado (OK)'), (COLORES['en_proceso'], 'Con pendientes'),
+                                    (COLORES[None], 'Sin registro')]),
+                            use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True})
+        with tabla:
+            nombres = terrenos.set_index('id')['nombre']
+            vista = por_sitio.reset_index().assign(Sitio=lambda x: x['terreno_id'].map(nombres),
+                                                   Entrega=lambda x: x['ok'].map({True: 'OK', False: 'Pendiente'}))
+            numericas = ['corte_m3', 'relleno_m3', 'capas_acceso', 'capas_living', 'capas_calicata', 'densidades']
+            vista[numericas] = vista[numericas].astype(float)
+            st.dataframe(vista[['Sitio', 'corte_m3', 'relleno_m3', 'capas_acceso', 'capas_living', 'capas_calicata',
+                                'densidades', 'Entrega']],
+                         hide_index=True, use_container_width=True,
+                         column_config={'corte_m3': st.column_config.NumberColumn('Corte m³', format='%.1f'),
+                                        'relleno_m3': st.column_config.NumberColumn('Relleno m³', format='%.1f'),
+                                        'capas_acceso': st.column_config.NumberColumn('Capas acceso', format='%d'), 'capas_living': st.column_config.NumberColumn('Capas living', format='%d'),
+                                        'capas_calicata': st.column_config.NumberColumn('Capas calicata', format='%d'),
+                                        'densidades': st.column_config.NumberColumn('Densidades', format='%d')})
+            con_p = por_sitio.index[(por_sitio['pendiente'] | por_sitio['pend_capas']).astype(bool).to_numpy()]
+            if len(con_p):
+                st.caption('Relleno o capas registrados como "P" (pendiente) en: ' + ', '.join(nombres[t] for t in con_p))
+        st.caption('Cada capa de ~0,25 m lleva un ensayo de densidad. Entrega OK = todos los registros del sitio con OK.')
 
 # ---------------------------------------------------------------- Tickets
 

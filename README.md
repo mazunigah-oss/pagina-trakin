@@ -23,6 +23,20 @@ Requerimientos y decisiones: [`docs/01-analisis-requerimientos.md`](docs/01-anal
 
 El selector **Ver al día** muestra la obra en cualquier fecha.
 
+## Carga inicial Loma La Cruz Norte (datos al 04/10/2026)
+
+En [`data/carga_inicial/`](data/carga_inicial) están los datos de obra listos para subir en **Cargar datos**, en este orden:
+
+| # | Archivo | Tipo de carga |
+|---|---|---|
+| 1 | `1_sitios_volumen_avance_programa.csv` | Avance acumulado por sitio |
+| 2 | `1_sitios_volumen_avance_programa.csv` (el mismo) | Programa (carta Gantt) |
+| 3 | `2_adicional_botadero.csv` | Avance acumulado por sitio |
+| 4 | `3_rellenos_densidades.csv` | Rellenos compactados y densidades |
+| 5 | `4_hitos.csv` | Hitos de la obra |
+
+Volumen proyectado = esponjado (excavación × 1,43), que es lo que trasladan los camiones.
+
 ## Archivos que se cargan
 
 Plantillas en la pestaña "Cargar datos" y ejemplos en [`data/ejemplos/`](data/ejemplos). CSV (`;` o `,`) o Excel.
@@ -34,6 +48,8 @@ Plantillas en la pestaña "Cargar datos" y ejemplos en [`data/ejemplos/`](data/e
 | Programa (Gantt) | **REEMPLAZA** | `sitio;inicio;termino` (+ opcional `actividad`, `zona`, `tarea`) |
 | Volúmenes proyectados | **ACTUALIZA** | `sitio;actividad;volumen_proyectado_m3;estado` |
 | Entregas de terrazas | **ACTUALIZA** | `sitio;zona;estado;fecha_entrega` |
+| Rellenos y densidades | **REEMPLAZA** | `sitio;corte_m3;relleno_m3;capas_acceso;capas_living;capas_calicata;entrega` (`P` = pendiente) |
+| Hitos | **REEMPLAZA** | `hito;fecha` |
 | Ajustes (topografía) | **SUMA** | `sitio;actividad;fecha;volumen_m3;motivo` |
 
 Tickets:

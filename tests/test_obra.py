@@ -43,7 +43,7 @@ def test_siembra_48_sitios_144_terrazas_y_etapas(motor):
     assert sorted(sitios['etapa'].value_counts().to_dict().items()) == [(1, 26), (2, 22)]
     z = d['zona'].merge(sitios[['id']], left_on='terreno_id', right_on='id')
     assert z['zona'].value_counts().to_dict() == {'acceso': 48, 'living': 48, 'fondo_patio': 48}
-    assert len(d['actividad']) == 2 * len(d['terreno'])
+    assert len(d['actividad']) == 3 * len(d['terreno'])
 
 
 def test_csv_de_la_maquina(motor):
@@ -163,8 +163,8 @@ def test_app_streamlit_arranca(tmp_path, monkeypatch):
     monkeypatch.setenv('ADMIN_PASSWORD', 'clave')
     at = AppTest.from_file(str(RAIZ / 'streamlit_app.py'), default_timeout=60).run()
     assert not at.exception
-    assert [t.label for t in at.tabs][:6] == ['Resumen', 'Curva de avance', 'Entregas', 'Programa',
-                                              'Movimiento de tierra', 'Tickets']
+    assert [t.label for t in at.tabs][:7] == ['Resumen', 'Curva de avance', 'Entregas', 'Programa',
+                                              'Movimiento de tierra', 'Rellenos', 'Tickets']
     at.sidebar.text_input[0].input('mala')
     at.sidebar.button[0].click().run()
     assert 'Cargar datos' not in [t.label for t in at.tabs]
@@ -271,3 +271,24 @@ def test_avance_en_fraccion_excel_y_m3(motor):
     assert r[3] == pytest.approx(100) and r[4] == pytest.approx(30)
     rev = I.revisar(motor, 'avance', b'sitio;avance\n5;40\n')
     assert rev.errores and 'volumen proyectado' in rev.errores[0][1]
+
+
+def test_carga_inicial_loma_la_cruz_norte(motor):
+    """Los archivos de data/carga_inicial (datos al 04/10/2026) cuadran con los totales del documento de obra."""
+    d = RAIZ / 'data' / 'carga_inicial'
+    pasos = [('avance', '1_sitios_volumen_avance_programa.csv'), ('gantt', '1_sitios_volumen_avance_programa.csv'),
+             ('avance', '2_adicional_botadero.csv'), ('rellenos', '3_rellenos_densidades.csv'), ('hitos', '4_hitos.csv')]
+    for tipo, archivo in pasos:
+        rev = cargar(motor, tipo, (d / archivo).read_bytes(), archivo)
+        assert rev.ok and not rev.errores, (archivo, rev.errores[:3])
+    t = tablas(motor)
+    acts = C.volumenes(t['actividad'], t['viaje'], t['ajuste'], hasta='2026-10-04').groupby('tipo')[
+        ['volumen_proyectado_m3', 'retirado_m3']].sum()
+    assert acts.loc['corte', 'volumen_proyectado_m3'] == pytest.approx(41974.93, abs=0.01)
+    assert acts.loc['corte', 'retirado_m3'] == pytest.approx(28364.56, abs=0.05)
+    assert acts.loc['adicional', 'volumen_proyectado_m3'] == 4488
+    assert len(t['gantt']) == 25
+    r = C.leer(motor, 'relleno')
+    assert r['corte_m3'].sum() == pytest.approx(3353.8)
+    assert r[['capas_acceso', 'capas_living', 'capas_calicata']].sum().sum() == 71
+    assert len(C.leer(motor, 'hito')) == 3

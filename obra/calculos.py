@@ -198,13 +198,17 @@ def curva_programada(gantt: pd.DataFrame, actividades: pd.DataFrame):
     return pd.DataFrame({'fecha': fechas, 'pct': 100 * diario.cumsum().values / total})
 
 
-def curva_real(viajes: pd.DataFrame, ajustes: pd.DataFrame, total_proyectado: float, hasta: str, inicio=None):
+def curva_real(viajes: pd.DataFrame, ajustes: pd.DataFrame, total_proyectado: float, hasta: str, inicio=None,
+               actividades: pd.DataFrame | None = None, terreno_ids=None):
     """Serie diaria del % acumulado real (tickets netos + ajustes) / volumen proyectado total.
 
     Entre fechas con datos se interpola en línea recta (así, con avances informados cada semana la curva
     no queda en escalones). Si se da `inicio` (comienzo del programa), la curva parte en 0 ese día.
     La serie termina en el último día con datos (no se inventa avance después).
     """
+    if terreno_ids is not None:  # solo los sitios del alcance elegido (los tickets "General" quedan fuera)
+        viajes = viajes[viajes['terreno_id'].isin(terreno_ids)]
+        ajustes = ajustes[ajustes['actividad_id'].isin(actividades.loc[actividades['terreno_id'].isin(terreno_ids), 'id'])]
     movs = pd.concat([viajes[['fecha', 'volumen_m3']], ajustes[['fecha', 'volumen_m3']]])
     movs = movs[movs['fecha'] <= hasta]
     if movs.empty or total_proyectado <= 0:

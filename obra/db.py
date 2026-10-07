@@ -7,6 +7,8 @@ from sqlalchemy import (Column, Float, ForeignKey, Integer, MetaData, String, Ta
 
 RAIZ = Path(__file__).resolve().parent.parent
 GEOMETRIA = RAIZ / 'data' / 'geometria.json'
+# escarpe y corte (excavación) de cada sitio; adicional = volumen extra a botadero
+TIPOS_ACTIVIDAD = ('escarpe', 'corte', 'adicional')
 
 meta = MetaData()
 
@@ -38,7 +40,7 @@ actividad = Table(
     'actividad', meta,  # escarpe y corte de cada terreno
     Column('id', Integer, primary_key=True),
     Column('terreno_id', Integer, ForeignKey('terreno.id', ondelete='CASCADE'), nullable=False),
-    Column('tipo', String(10), nullable=False),  # escarpe | corte
+    Column('tipo', String(10), nullable=False),  # escarpe | corte | adicional
     Column('volumen_proyectado_m3', Float, nullable=False, default=0),
     Column('estado', String(16), nullable=False, default='sin_intervenir'),  # sin_intervenir|en_proceso|terminado
     UniqueConstraint('terreno_id', 'tipo'),
@@ -91,6 +93,29 @@ gantt = Table(
     Column('carga_id', Integer, ForeignKey('carga.id')),
 )
 
+relleno = Table(
+    'relleno', meta,  # rellenos compactados en capas de ~0,25 m y sus densidades
+    Column('id', Integer, primary_key=True),
+    Column('terreno_id', Integer, ForeignKey('terreno.id', ondelete='CASCADE'), nullable=False),
+    Column('corte_m3', Float),
+    Column('relleno_m3', Float),
+    Column('relleno_pendiente', Integer, nullable=False, default=0),  # registrado como "P"
+    Column('capas_acceso', Integer),
+    Column('capas_living', Integer),
+    Column('capas_calicata', Integer),
+    Column('capas_pendiente', Integer, nullable=False, default=0),
+    Column('entrega', String(20)),
+    Column('carga_id', Integer, ForeignKey('carga.id')),
+)
+
+hito = Table(
+    'hito', meta,
+    Column('id', Integer, primary_key=True),
+    Column('nombre', String(120), nullable=False),
+    Column('fecha', String(10), nullable=False),
+    Column('carga_id', Integer, ForeignKey('carga.id')),
+)
+
 historial = Table(
     'historial', meta,
     Column('id', Integer, primary_key=True),
@@ -126,6 +151,13 @@ def sembrar(motor):
     """Carga inicial de sitios, terrazas y actividades desde data/geometria.json."""
     with motor.begin() as con:
         if con.execute(select(func.count()).select_from(terreno)).scalar():
+            # bases ya creadas: agregar los tipos de actividad nuevos que falten
+            existentes = {(r.terreno_id, r.tipo) for r in con.execute(select(actividad.c.terreno_id, actividad.c.tipo))}
+            faltan = [dict(terreno_id=tid, tipo=x, volumen_proyectado_m3=0, estado='sin_intervenir')
+                      for (tid,) in con.execute(select(terreno.c.id)) for x in TIPOS_ACTIVIDAD
+                      if (tid, x) not in existentes]
+            if faltan:
+                con.execute(insert(actividad), faltan)
             return
         geo = json.loads(GEOMETRIA.read_text())
         ids = {}
@@ -136,7 +168,7 @@ def sembrar(motor):
                 modelo=t.get('modelo'), etapa=t.get('etapa'), area_m2=t.get('area_m2')))
             ids[t['codigo']] = r.inserted_primary_key[0]
             con.execute(insert(actividad), [dict(terreno_id=ids[t['codigo']], tipo=x, volumen_proyectado_m3=0,
-                                                 estado='sin_intervenir') for x in ('escarpe', 'corte')])
+                                                 estado='sin_intervenir') for x in TIPOS_ACTIVIDAD])
         con.execute(insert(zona), [dict(terreno_id=ids[z['terreno']], zona=z['zona'], poligono=json.dumps(z['puntos']),
                                         area_m2=z['area_m2'], estado='sin_intervenir') for z in geo['zonas']])
 
