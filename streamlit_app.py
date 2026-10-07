@@ -31,7 +31,7 @@ def secreto(nombre):
 
 
 @st.cache_resource
-def motor():
+def motor(version):  # la versión fuerza una conexión nueva cuando se publica código nuevo
     return T.crear_motor(secreto('DATABASE_URL'))
 
 
@@ -40,7 +40,7 @@ def geometria():
     return T.cargar_geometria()
 
 
-MOTOR = motor()
+MOTOR = motor(T.VERSION)
 GEO = geometria()
 PERSISTENTE = bool(secreto('DATABASE_URL'))
 
@@ -87,6 +87,7 @@ with st.sidebar:
                             st.rerun()
                         else:
                             st.error('Contraseña incorrecta')
+    st.caption(f'Versión {T.VERSION}')
     if not PERSISTENTE:
         st.warning('Base de datos local: en Streamlit Cloud los datos cargados se pierden al reiniciar la app. '
                    'Configure DATABASE_URL para guardarlos de forma permanente.', icon='⚠️')

@@ -727,6 +727,15 @@ def revisar(motor, tipo, contenido, nombre=''):
     return rev
 
 
+def _python(v):
+    """Convierte números de numpy/pandas a números normales de Python (PostgreSQL no acepta los de numpy)."""
+    if hasattr(v, 'item') and not isinstance(v, (str, bytes)):
+        v = v.item()
+    if isinstance(v, float) and v != v:
+        return None
+    return v
+
+
 def aplicar(motor, tipo, rev: Revision, nombre=''):
     """Guarda en una sola transacción. Devuelve el id de la carga."""
     if not rev.ok or not rev.ops:
@@ -734,9 +743,11 @@ def aplicar(motor, tipo, rev: Revision, nombre=''):
     resumen = dict(filas=rev.filas, **rev.resumen, errores=len(rev.errores))
     with motor.begin() as con:
         carga_id = con.execute(insert(T.carga).values(
-            tipo=tipo, archivo=nombre[:200], resumen=json.dumps(resumen, ensure_ascii=False),
+            tipo=tipo, archivo=nombre[:200], resumen=json.dumps({k: _python(v) for k, v in resumen.items()},
+                                                                ensure_ascii=False),
             creado_en=ahora_chile())).inserted_primary_key[0]
-        TIPOS[tipo].aplicar(con, rev.ops, carga_id)
+        ops = [{k: _python(v) for k, v in o.items()} for o in rev.ops]
+        TIPOS[tipo].aplicar(con, ops, int(carga_id))
     return carga_id
 
 

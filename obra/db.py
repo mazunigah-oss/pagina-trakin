@@ -6,6 +6,7 @@ from sqlalchemy import (Column, Float, ForeignKey, Integer, MetaData, String, Ta
                         create_engine, event, func, insert, select)
 
 RAIZ = Path(__file__).resolve().parent.parent
+VERSION = '2026-10-07 c'  # se muestra en la app para saber qué versión está publicada
 GEOMETRIA = RAIZ / 'data' / 'geometria.json'
 # escarpe y corte (excavación) de cada sitio; adicional = volumen extra a botadero
 TIPOS_ACTIVIDAD = ('escarpe', 'corte', 'adicional')
@@ -142,6 +143,9 @@ def _adaptar_numpy():
     for tipo in (np.float64, np.float32, np.int64, np.int32, np.int16, np.int8, np.uint64, np.uint32):
         register_adapter(tipo, numero)
     register_adapter(np.bool_, lambda v: AsIs('TRUE' if v else 'FALSE'))
+
+
+_adaptar_numpy()
 
 
 def _normalizar_url(url):
