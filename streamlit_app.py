@@ -5,7 +5,7 @@ Visita: acceso libre, solo lectura. Administrador: contraseña (secreto ADMIN_PA
 import hmac
 import json
 import os
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.express as px
@@ -55,11 +55,25 @@ def fecha_cl(iso):
     return '—' if not iso or iso != iso else '-'.join(reversed(str(iso)[:10].split('-')))
 
 
-NOMBRE_ACT = {'escarpe': 'Escarpe', 'corte': 'Corte / excavación', 'adicional': 'Adicional a botadero'}
+NOMBRE_ACT = {'escarpe': 'Escarpe', 'corte': 'Corte / excavación',
+              'adicional': 'Proforma · adicional a botadero (no planificado)'}
+COLOR_AVANCE = {'terminado': '#2f9e6b', 'en_proceso': '#f2c230', 'sin_intervenir': '#d5dbd6'}
+COLOR_COMPARA = {'atrasado': '#d64545', 'al_dia': '#2f9e6b', 'adelantado': '#3b7dd8', None: '#f1f3f0'}
+COLOR_GANTT = {'terminado': '#2f9e6b', 'en_proceso': '#f2c230', 'sin_intervenir': '#c9d1cb', None: '#f1f3f0'}
+NOMBRE_GANTT = {'terminado': 'Debería estar listo', 'en_proceso': 'Debería estar en trabajos',
+                'sin_intervenir': 'Aún no le toca'}
 
 
 def pastilla(estado):
     return f':{ {"entregado": "green", "terminado": "green", "al_dia": "green", "en_proceso": "orange", "atrasado": "red", "adelantado": "blue"}.get(estado, "gray")}-badge[{NOMBRES.get(estado, "Sin programa")}]'
+
+
+def leyenda_abajo(items):
+    """Leyenda de colores en lenguaje simple, debajo del mapa."""
+    st.markdown('<div style="display:flex;flex-direction:column;gap:6px;font-size:0.92rem;margin-top:-6px">' + ''.join(
+        f'<div><span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:{c};'
+        f'border:1px solid #c9cfca;vertical-align:-2px;margin-right:8px"></span><b>{t}</b>'
+        + (f' — {d}' if d else '') + '</div>' for c, t, d in items) + '</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------- barra lateral
@@ -135,42 +149,106 @@ def encabezado_sitio(tid):
 # ---------------------------------------------------------------- Resumen
 
 with tabs['Resumen']:
-    r = C.resumen_dia(viajes, terrenos, dia)
-    total_proy = acts['volumen_proyectado_m3'].sum()
-    total_ret = acts['retirado_m3'].sum()
+    plan = C.planificadas(acts)
+    total_proy = float(plan['volumen_proyectado_m3'].sum())
+    total_ret = float(plan['retirado_m3'].sum())
+    debe = float(prog_t['programado_m3'].sum())
+    dif = total_ret - debe
+    proforma = acts[acts['tipo'] == 'adicional']
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric('Camiones', num(r['camiones']), help='Patentes distintas con tickets válidos en el día')
-    c2.metric('Viajes', num(r['viajes']), help='Tickets válidos menos anulados')
-    c3.metric('m³ retirados', num(r['m3'], 1))
-    c4.metric('Acumulado obra', f'{num(total_ret)} m³',
-              f'{num(100 * total_ret / total_proy, 1)} % de {num(total_proy)} m³' if total_proy else 'sin proyectado',
-              delta_color='off')
+    c1.metric('Avance movimiento de tierra', f'{num(100 * total_ret / total_proy, 1)} %' if total_proy else '—',
+              help='m³ retirados / m³ proyectados (esponjados) de todos los sitios. No incluye la proforma.')
+    c2.metric('m³ retirados', f'{num(total_ret)} m³', f'de {num(total_proy)} m³ proyectados', delta_color='off')
+    c3.metric('Deberían ir retirados', f'{num(debe)} m³', help='Según la carta Gantt a la fecha: cada sitio en '
+              'proporción a los días transcurridos de su programa. Sitios sin programa: se toma lo real.')
+    c4.metric('Diferencia', f"{'+' if dif >= 0 else '−'}{num(abs(dif))} m³",
+              'adelantados' if dif >= 0 else 'atrasados', delta_color='normal' if dif >= 0 else 'inverse')
+
+    pt = prog_t.set_index('terreno_id')
+    mapa, lista = st.columns([1, 1])
+    with mapa:
+        st.markdown('**Estado de los sitios**')
+
+        def hover_inicio(z):
+            f = pt.loc[z['terreno_id']]
+            txt = f"<b>{z['nombre']}</b><br>{NOMBRES[f['real']]}"
+            if f['proyectado_m3'] > 0:
+                txt += (f"<br>Retirado: {num(f['retirado_m3'])} de {num(f['proyectado_m3'])} m³ "
+                        f"({num(100 * f['avance_real'])} %)")
+            if f['con_programa']:
+                txt += (f"<br>Debería ir: {num(f['programado_m3'])} m³ "
+                        f"({'+' if f['diferencia_m3'] >= 0 else '−'}{num(abs(f['diferencia_m3']))} m³)")
+            return txt
+
+        st.plotly_chart(figura(GEO, zonas, lambda z: COLOR_AVANCE[pt.loc[z['terreno_id'], 'real']], hover_inicio, [],
+                               alto=560),
+                        use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True})
+        leyenda_abajo([(COLOR_AVANCE['terminado'], 'Listo', 'movimiento de tierra terminado'),
+                       (COLOR_AVANCE['en_proceso'], 'En trabajos', 'con avance, aún no termina'),
+                       (COLOR_AVANCE['sin_intervenir'], 'Sin iniciar', '')])
+    with lista:
+        cont = prog_t['real'].value_counts()
+        k1, k2, k3 = st.columns(3)
+        k1.metric('Listos', num(cont.get('terminado', 0)))
+        k2.metric('En trabajos', num(cont.get('en_proceso', 0)))
+        k3.metric('Sin iniciar', num(cont.get('sin_intervenir', 0)))
+        trabajo = prog_t[prog_t['real'] == 'en_proceso'].sort_values('codigo')
+        if not trabajo.empty:
+            st.markdown('**Sitios en trabajos**')
+            st.dataframe(pd.DataFrame({
+                'Sitio': trabajo['codigo'].str.replace('S-0', 'S-').str.replace('S-', ''),
+                'Avance': 100 * trabajo['avance_real'].astype(float),
+                'Retirado': trabajo['retirado_m3'],
+                'Debería': trabajo['programado_m3'].where(trabajo['con_programa']),
+                'Dif.': trabajo['diferencia_m3'].where(trabajo['con_programa'])}),
+                hide_index=True, use_container_width=True, height=min(460, 38 + 35 * len(trabajo)),
+                column_config={'Sitio': st.column_config.TextColumn('Sitio', width='small'),
+                               'Avance': st.column_config.ProgressColumn('Avance', format='%.0f %%', min_value=0,
+                                                                         max_value=100, width='small'),
+                               'Retirado': st.column_config.NumberColumn('Retirado m³', format='%.0f'),
+                               'Debería': st.column_config.NumberColumn('Debería m³', format='%.0f',
+                                                                        help='Según la carta Gantt a la fecha'),
+                               'Dif.': st.column_config.NumberColumn('Dif. m³', format='%+.0f')})
+        if proforma['volumen_proyectado_m3'].sum() > 0:
+            st.caption(f"Proforma (volumen adicional a botadero, no planificado): "
+                       f"{num(proforma['retirado_m3'].sum())} de {num(proforma['volumen_proyectado_m3'].sum())} m³. "
+                       'No se incluye en el avance.')
+
+    st.divider()
+    ayer = (date.fromisoformat(dia) - timedelta(days=1)).isoformat()
+    r, ra = C.resumen_dia(viajes, terrenos, dia), C.resumen_dia(viajes, terrenos, ayer)
+    st.markdown(f'**Camiones — {fecha_cl(dia)} comparado con {fecha_cl(ayer)}**')
+
+    def delta(hoy_v, ayer_v, d=0):
+        x = hoy_v - ayer_v
+        return f"{'+' if x >= 0 else '−'}{num(abs(x), d)} vs ayer"
+
+    t1, t2, t3 = st.columns(3)
+    t1.metric('Camiones', num(r['camiones']), delta(r['camiones'], ra['camiones']),
+              help='Patentes distintas con tickets válidos en el día')
+    t2.metric('Viajes', num(r['viajes']), delta(r['viajes'], ra['viajes']), help='Tickets válidos menos anulados')
+    t3.metric('m³ trasladados', num(r['m3'], 1), delta(r['m3'], ra['m3'], 1))
     if r['anulaciones']:
         st.caption(f'{r["anulaciones"]} ticket(s) anulados en el día (ya descontados).')
-    izq, der = st.columns(2)
-    with izq:
-        st.markdown(f'**Origen de la tierra — {fecha_cl(dia)}**')
-        if r['por_origen'].empty:
-            ultimo = viajes['fecha'].max() if not viajes.empty else None
-            st.info(f'Sin tickets el {fecha_cl(dia)}.' + (f' Último día con tickets: {fecha_cl(ultimo)}.' if ultimo else ''))
-        else:
-            st.dataframe(r['por_origen'].rename(columns={'origen': 'Origen', 'viajes': 'Viajes', 'm3': 'm³'}),
+    if r['por_origen'].empty and ra['por_origen'].empty:
+        ultimo = viajes['fecha'].max() if not viajes.empty else None
+        st.info(f'Sin tickets de camiones el {fecha_cl(dia)} ni el {fecha_cl(ayer)}.'
+                + (f' Último día con tickets: {fecha_cl(ultimo)}.' if ultimo else ' Aún no se han cargado tickets.'))
+    else:
+        origen = r['por_origen'].rename(columns={'viajes': 'Viajes hoy', 'm3': 'm³ hoy'}).merge(
+            ra['por_origen'].rename(columns={'viajes': 'Viajes ayer', 'm3': 'm³ ayer'}), on='origen', how='outer').fillna(0)
+        izq, der = st.columns(2)
+        with izq:
+            st.markdown('**Origen de la tierra**')
+            st.dataframe(origen.rename(columns={'origen': 'Origen'}).sort_values('m³ hoy', ascending=False),
                          hide_index=True, use_container_width=True,
-                         column_config={'m³': st.column_config.NumberColumn(format='%.1f')})
-    with der:
-        st.markdown('**m³ netos por día (últimos 30 días)**')
-        serie = C.serie_diaria(viajes, dia)
-        fig = px.bar(serie, x='fecha', y='m3', labels={'fecha': '', 'm3': 'm³'}, color_discrete_sequence=['#2f6d4f'])
-        fig.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0), bargap=0.15)
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-
-    st.markdown('**Entregas de terrazas**')
-    cont = prog_z['estado'].value_counts()
-    e1, e2, e3, e4 = st.columns(4)
-    e1.metric('Entregadas', num(cont.get('entregado', 0)), f'de {len(prog_z)}', delta_color='off')
-    e2.metric('En proceso', num(cont.get('en_proceso', 0)))
-    e3.metric('Sin intervenir', num(cont.get('sin_intervenir', 0)))
-    e4.metric('Sitios atrasados (programa)', num((prog_t['comparacion'] == 'atrasado').sum()))
+                         column_config={c: st.column_config.NumberColumn(format='%.1f') for c in ('m³ hoy', 'm³ ayer')})
+        with der:
+            st.markdown('**m³ por día (últimos 30 días)**')
+            serie = C.serie_diaria(viajes, dia)
+            fig = px.bar(serie, x='fecha', y='m3', labels={'fecha': '', 'm3': 'm³'}, color_discrete_sequence=['#2f6d4f'])
+            fig.update_layout(height=260, margin=dict(l=0, r=0, t=10, b=0), bargap=0.15)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
 # ---------------------------------------------------------------- Curva de avance
 
@@ -182,13 +260,14 @@ with tabs['Curva de avance']:
                                         '"Sitios con programa" compara real y programado sobre los mismos sitios. '
                                         '"Toda la obra" usa el volumen de todos los sitios (incluye los tickets sin sitio).')
     ids_alcance = sitios_prog if alcance and alcance.startswith('Sitios') else None
-    acts_alc = acts if ids_alcance is None else acts[acts['terreno_id'].isin(ids_alcance)]
+    acts_plan = C.planificadas(acts)  # la proforma no entra a la curva
+    acts_alc = acts_plan if ids_alcance is None else acts_plan[acts_plan['terreno_id'].isin(ids_alcance)]
     total_proy = float(acts_alc['volumen_proyectado_m3'].sum())
     prog = C.curva_programada(gantt, acts)
     real = C.curva_real(viajes, ajustes, total_proy, dia, inicio=None if gantt.empty else gantt['inicio'].min(),
                         actividades=acts, terreno_ids=ids_alcance)
     if ids_alcance is None and sitios_prog:
-        prog = prog.assign(pct=prog['pct'] * float(acts[acts['terreno_id'].isin(sitios_prog)]['volumen_proyectado_m3'].sum())
+        prog = prog.assign(pct=prog['pct'] * float(acts_plan[acts_plan['terreno_id'].isin(sitios_prog)]['volumen_proyectado_m3'].sum())
                            / total_proy) if total_proy > 0 else prog
     if total_proy <= 0:
         st.info('Para calcular el % de avance hay que cargar los volúmenes proyectados (Cargar datos → Volúmenes '
@@ -301,46 +380,54 @@ with tabs['Entregas']:
 with tabs['Programa']:
     if gantt.empty:
         st.info('Aún no se ha cargado el programa (carta Gantt). El administrador puede subirlo en "Cargar datos".')
-    modo = st.segmented_control('Mostrar', ['Cómo deberíamos ir', 'Real vs. programado'], default='Cómo deberíamos ir')
     pt = prog_t.set_index('terreno_id')
-    mapa, panel = st.columns([3, 1])
-    with panel:
-        sel = elegir_sitio('sel_programa')
-    if modo == 'Real vs. programado':
-        color = lambda z: COLORES[pt.loc[z['terreno_id'], 'comparacion']]
-        ley = [(COLORES[k], NOMBRES[k]) for k in ('atrasado', 'al_dia', 'adelantado', None)]
-    else:
-        color = lambda z: COLORES[pt.loc[z['terreno_id'], 'programado']]
-        ley = [(COLORES[k], NOMBRES[k]) for k in ('sin_intervenir', 'en_proceso', 'terminado', None)]
 
     def hover_prog(z):
         p = pt.loc[z['terreno_id']]
         if p['programado'] is None:
-            return f"<b>{z['nombre']}</b><br>Sin programa"
+            return f"<b>{z['nombre']}</b><br>Sin programa en la carta Gantt<br>Real: {NOMBRES[p['real']]}"
         return (f"<b>{z['nombre']}</b><br>Programa: {fecha_cl(p['inicio'])} → {fecha_cl(p['termino'])}"
-                f"<br>Debería estar: {NOMBRES[p['programado']]} ({num(100 * p['avance_programado'])} %)"
-                f"<br>Real: {NOMBRES[p['real']]}" + (f" ({num(100 * p['avance_real'])} % m³)" if p['avance_real'] == p['avance_real'] and p['avance_real'] is not None else ''))
+                f"<br>Según Gantt: {NOMBRE_GANTT[p['programado']]}<br>Real: {NOMBRES[p['real']]}"
+                + (f" ({num(100 * p['avance_real'])} %)" if p['avance_real'] == p['avance_real'] and p['avance_real'] is not None else ''))
 
-    with mapa:
-        st.plotly_chart(figura(GEO, zonas, color, hover_prog, ley, sel), use_container_width=True,
-                        config={'displayModeBar': False, 'scrollZoom': True})
-    with panel:
-        if sel:
-            encabezado_sitio(sel)
-            p = pt.loc[sel]
-            if p['programado'] is None:
-                st.caption('Sin tarea en el programa.')
-            else:
-                st.markdown(f"Programa: **{fecha_cl(p['inicio'])} → {fecha_cl(p['termino'])}**  \n"
-                            f"Debería estar {pastilla(p['programado'])} ({num(100 * p['avance_programado'])} % del plazo)  \n"
-                            f"Real {pastilla(p['real'])}  \n{pastilla(p['comparacion'])}")
-        atrasados = prog_t[prog_t['comparacion'] == 'atrasado']
-        if not atrasados.empty:
-            st.markdown('**Sitios atrasados**')
-            st.dataframe(atrasados[['codigo', 'termino', 'real']].assign(
-                termino=atrasados['termino'].map(fecha_cl), real=atrasados['real'].map(NOMBRES))
-                .rename(columns={'codigo': 'Sitio', 'termino': 'Debía terminar', 'real': 'Real'}),
-                hide_index=True, use_container_width=True)
+    izq, der = st.columns(2)
+    with izq:
+        st.markdown(f'**¿Cómo vamos? — estado al {fecha_cl(dia)}**')
+        st.plotly_chart(figura(GEO, zonas, lambda z: COLOR_COMPARA[pt.loc[z['terreno_id'], 'comparacion']], hover_prog, [],
+                               alto=560), use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True},
+                        key='mapa_comparacion')
+        cont = prog_t['comparacion'].value_counts()
+        leyenda_abajo([
+            (COLOR_COMPARA['atrasado'], f"Atrasado ({cont.get('atrasado', 0)})",
+             'según la carta Gantt ya debería ir más avanzado'),
+            (COLOR_COMPARA['al_dia'], f"Según Gantt ({cont.get('al_dia', 0)})", 'va como estaba programado'),
+            (COLOR_COMPARA['adelantado'], f"Adelantado ({cont.get('adelantado', 0)})",
+             'va más avanzado de lo programado'),
+            (COLOR_COMPARA[None], 'Sin programa', 'no está en la carta Gantt')])
+    with der:
+        st.markdown(f'**¿Cómo deberíamos ir? — según la carta Gantt al {fecha_cl(dia)}**')
+        st.plotly_chart(figura(GEO, zonas, lambda z: COLOR_GANTT[pt.loc[z['terreno_id'], 'programado']], hover_prog, [],
+                               alto=560), use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True},
+                        key='mapa_gantt')
+        cont = prog_t['programado'].value_counts()
+        leyenda_abajo([
+            (COLOR_GANTT['terminado'], f"Debería estar listo ({cont.get('terminado', 0)})",
+             'su programa ya terminó'),
+            (COLOR_GANTT['en_proceso'], f"Debería estar en trabajos ({cont.get('en_proceso', 0)})",
+             'hoy está dentro de su programa'),
+            (COLOR_GANTT['sin_intervenir'], f"Aún no le toca ({cont.get('sin_intervenir', 0)})",
+             'su programa empieza más adelante'),
+            (COLOR_GANTT[None], 'Sin programa', 'no está en la carta Gantt')])
+
+    atrasados = prog_t[prog_t['comparacion'] == 'atrasado']
+    if not atrasados.empty:
+        st.markdown('<br>**Sitios atrasados**', unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame({'Sitio': atrasados['codigo'], 'Según Gantt': atrasados['programado'].map(NOMBRE_GANTT),
+                                   'Real': atrasados['real'].map(NOMBRES), 'Debía terminar': atrasados['termino'].map(fecha_cl),
+                                   'Avance': 100 * atrasados['avance_real'].astype(float)}),
+                     hide_index=True, use_container_width=True,
+                     column_config={'Avance': st.column_config.ProgressColumn('Avance', format='%.0f %%', min_value=0,
+                                                                               max_value=100)})
     if not gantt.empty:
         with st.expander('Ver carta Gantt'):
             g = gantt.merge(terrenos[['id', 'codigo']].rename(columns={'id': 'terreno_id'}), on='terreno_id')
@@ -354,13 +441,13 @@ with tabs['Programa']:
                 fig.add_annotation(x=pd.Timestamp(h.fecha), y=1, yref='paper', text=h.nombre, showarrow=False,
                                    font=dict(size=10, color='#3b7dd8'), xanchor='left', yanchor='bottom')
             fig.update_yaxes(autorange='reversed', title='')
-            fig.update_layout(height=max(300, 16 * g['Sitio'].nunique()), margin=dict(l=0, r=0, t=10, b=0))
+            fig.update_layout(height=max(300, 16 * g['Sitio'].nunique()), margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------------- Movimiento de tierra
 
 with tabs['Movimiento de tierra']:
-    avance = acts.groupby('terreno_id')[['volumen_proyectado_m3', 'retirado_m3']].sum()
+    avance = C.planificadas(acts).groupby('terreno_id')[['volumen_proyectado_m3', 'retirado_m3']].sum()
     avance['avance'] = (avance['retirado_m3'] / avance['volumen_proyectado_m3']).where(avance['volumen_proyectado_m3'] > 0)
     mapa, panel = st.columns([3, 1])
     with panel:
@@ -387,6 +474,8 @@ with tabs['Movimiento de tierra']:
                              use_container_width=True, column_config={'m³': st.column_config.NumberColumn(format='%.1f')})
                 if a.avance == a.avance and a.avance is not None:
                     st.progress(min(1.0, float(a.avance)), text=f'{num(100 * a.avance, 1)} %')
+    st.caption('El avance no incluye la proforma (volumen adicional a botadero no considerado en la planificación '
+               'inicial), que se muestra aparte en el detalle de cada sitio.')
     st.caption('m³ retirados = tickets del sitio + prorrateo de los tickets sin sitio (General, repartidos entre las '
                'actividades en proceso según su volumen proyectado) + ajustes manuales. Las anulaciones restan.')
 

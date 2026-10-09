@@ -12,10 +12,10 @@ Requerimientos y decisiones: [`docs/01-analisis-requerimientos.md`](docs/01-anal
 
 | Pestaña | Contenido |
 |---|---|
-| Resumen | Camiones, viajes y m³ del día; origen de la tierra por sitio; m³ de los últimos 30 días; entregas y sitios atrasados |
+| Resumen | Avance %, m³ retirados vs. los que deberían ir según la Gantt (+/− m³), mapa de sitios listos / en trabajos y camiones de hoy comparados con ayer |
 | Curva de avance | Curvas programada, real y proyectada al ritmo actual: fecha estimada de término, % que se alcanzaría a la fecha de término programada y ritmo necesario para terminar a tiempo |
 | Entregas | Plano con las 144 terrazas + edificios según su estado (sin intervenir / en proceso / entregado) |
-| Programa | Cómo deberíamos ir a la fecha según la carta Gantt, real vs. programado y la carta Gantt |
+| Programa | Dos mapas: a la izquierda cómo vamos (rojo atrasado, verde según Gantt, azul adelantado) y a la derecha cómo deberíamos ir (verde listo, amarillo en trabajos), con la explicación de colores abajo |
 | Movimiento de tierra | % de avance (m³ retirados / proyectados) por sitio, con el detalle del cálculo |
 | Tickets | Tickets de la máquina filtrables por fecha |
 | Cargar datos *(admin)* | Subida de archivos con revisión previa, historial y deshacer |
@@ -115,3 +115,8 @@ scripts/                procesar DXF, generar ejemplos
 data/                   geometría, DXF fuente, ejemplos
 tests/                  pruebas (pytest)
 ```
+
+## Proforma
+
+El volumen adicional a botadero (actividad `adicional`) es volumen no considerado en la planificación inicial: se
+muestra como **proforma** en el detalle de cada sitio y **no** entra al avance, al programa ni a las curvas.

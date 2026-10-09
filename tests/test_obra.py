@@ -324,3 +324,22 @@ def test_gantt_excel_semanas_a_csv(tmp_path):
     assert filas['6'][1:3] == ['2026-07-20', '2026-07-31']
     assert filas['5'][1:3] == ['2026-07-20', '2026-07-31']
     assert filas['25'][1:3] == ['2026-07-27', '2026-08-14']
+
+
+def test_proforma_no_cuenta_y_diferencia_contra_gantt(motor):
+    cargar(motor, 'gantt', b'sitio;inicio;termino\n31;2026-08-03;2026-08-28\n40;2026-10-01;2026-10-10\n')
+    cargar(motor, 'avance', b'sitio;fecha;avance_pct;volumen_proyectado_m3\n31;2026-10-04;100;150\n40;2026-10-04;20;100\n')
+    cargar(motor, 'avance', b'sitio;actividad;fecha;volumen_proyectado_m3;avance_pct\n31;adicional;2026-10-04;350;0\n')
+    t = tablas(motor)
+    acts = C.volumenes(t['actividad'], t['viaje'], t['ajuste'], hasta='2026-10-05')
+    p = C.programa_terrenos(t['terreno'], acts, t['gantt'], '2026-10-05').set_index('codigo')
+    # el sitio 31 está listo aunque su proforma (adicional a botadero) esté en 0 %
+    assert p.loc['S-31', 'real'] == 'terminado' and p.loc['S-31', 'comparacion'] == 'al_dia'
+    assert p.loc['S-31', 'proyectado_m3'] == 150
+    # sitio 40: programa del 01 al 10/10 -> al 05/10 lleva 5 de 10 días = 50 m³; retirado 20 -> -30 m³
+    assert p.loc['S-40', 'programado_m3'] == pytest.approx(50) and p.loc['S-40', 'diferencia_m3'] == pytest.approx(-30)
+    # sitios sin programa no suman diferencia
+    assert p.loc['S-01', 'diferencia_m3'] == 0
+    # la curva tampoco incluye la proforma
+    real = C.curva_real(t['viaje'], t['ajuste'], 250, '2026-10-05', actividades=acts)
+    assert real['m3'].iloc[-1] == pytest.approx(170)

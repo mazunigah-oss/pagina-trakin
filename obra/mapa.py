@@ -61,9 +61,10 @@ def figura(geo, zonas, color_de, hover_de, leyenda, seleccion=None, alto=680):
     for color, texto in leyenda:
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', name=texto,
                                  marker=dict(size=12, color=color, symbol='square')))
-    fig.update_xaxes(visible=False, range=[0, geo['ancho']])
-    fig.update_yaxes(visible=False, range=[geo['alto'], 0], scaleanchor='x', scaleratio=1)
+    fig.update_xaxes(visible=False, range=[0, geo['ancho']], constrain='domain')
+    fig.update_yaxes(visible=False, range=[geo['alto'], 0], scaleanchor='x', scaleratio=1, constrain='domain')
     fig.update_layout(height=alto, margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)',
                       paper_bgcolor='rgba(0,0,0,0)', hoverlabel=dict(bgcolor='white'),
-                      legend=dict(orientation='h', yanchor='bottom', y=1.0, x=0), dragmode='pan')
+                      legend=dict(orientation='h', yanchor='bottom', y=1.0, x=0), dragmode='pan',
+                      showlegend=bool(leyenda))
     return fig

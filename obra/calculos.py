@@ -6,6 +6,13 @@ import pandas as pd
 
 CHILE = ZoneInfo('America/Santiago')
 RANGO = {'sin_intervenir': 0, 'en_proceso': 1, 'entregado': 2, 'terminado': 2}
+# 'adicional' = proforma: volumen no considerado en la planificación inicial. Se muestra aparte y no
+# entra al avance, al programa ni a las curvas.
+PLANIFICADAS = ('escarpe', 'corte')
+
+
+def planificadas(acts: pd.DataFrame):
+    return acts[acts['tipo'].isin(PLANIFICADAS)]
 
 
 def hoy_chile():
@@ -54,13 +61,14 @@ def volumenes(actividades: pd.DataFrame, viajes: pd.DataFrame, ajustes: pd.DataF
                 aid = acts.loc[acts['tipo'] == tipo, 'id'].iloc[0]
                 directo[aid] = directo.get(aid, 0) + m3
             else:
-                _repartir(m3, acts, directo)
+                _repartir(m3, planificadas(acts), directo)
         general = viajes.loc[viajes['terreno_id'].isna(), 'volumen_m3'].sum()
-        cand = actividades[actividades['estado'] == 'en_proceso']
+        plan = planificadas(actividades)
+        cand = plan[plan['estado'] == 'en_proceso']
         if cand.empty:
-            cand = actividades[actividades['estado'] != 'terminado']
+            cand = plan[plan['estado'] != 'terminado']
         if cand.empty:
-            cand = actividades
+            cand = plan
         _repartir(general, cand, prorrateo)
     aj = ajustes.groupby('actividad_id')['volumen_m3'].sum().to_dict() if not ajustes.empty else {}
     out = actividades.copy()
@@ -94,6 +102,7 @@ def comparar(real, programado):
 def estado_real_terreno(acts: pd.DataFrame):
     """Terminado si el administrador marcó ambas actividades como terminadas, o si ya se retiró
     todo el volumen proyectado del sitio. En proceso si hay tickets o alguna actividad iniciada."""
+    acts = planificadas(acts)
     proy = acts['volumen_proyectado_m3'].sum()
     if (acts['estado'] == 'terminado').all() or (proy > 0 and acts['retirado_m3'].sum() >= proy):
         return 'terminado'
@@ -103,20 +112,23 @@ def estado_real_terreno(acts: pd.DataFrame):
 
 
 def programa_terrenos(terrenos, acts, gantt, dia):
-    """Por terreno: estado real del movimiento de tierra, estado y % programado, comparación."""
+    """Por terreno: estado real del movimiento de tierra, estado y % programado, comparación y m³ que
+    deberían ir retirados según el programa (sin programa: se toma lo real, sin diferencia)."""
     g = gantt[gantt['zona'].isna()] if not gantt.empty else gantt
     rango = g.groupby('terreno_id').agg(inicio=('inicio', 'min'), termino=('termino', 'max')) if not g.empty \
         else pd.DataFrame(columns=['inicio', 'termino'])
     filas = []
     for _, t in terrenos.iterrows():
-        a = acts[acts['terreno_id'] == t['id']]
+        a = planificadas(acts[acts['terreno_id'] == t['id']])
         real = estado_real_terreno(a)
         ini = rango['inicio'].get(t['id']) if t['id'] in rango.index else None
         fin = rango['termino'].get(t['id']) if t['id'] in rango.index else None
         prog, pct_prog = estado_programado(ini, fin, dia, 'terminado') if ini else (None, None)
-        proy, ret = a['volumen_proyectado_m3'].sum(), a['retirado_m3'].sum()
+        proy, ret = float(a['volumen_proyectado_m3'].sum()), float(a['retirado_m3'].sum())
+        debe = proy * pct_prog if pct_prog is not None else ret
         filas.append(dict(terreno_id=t['id'], codigo=t['codigo'], real=real, programado=prog, inicio=ini, termino=fin,
                           avance_programado=pct_prog, proyectado_m3=proy, retirado_m3=ret,
+                          programado_m3=debe, diferencia_m3=ret - debe, con_programa=pct_prog is not None,
                           avance_real=ret / proy if proy > 0 else None, comparacion=comparar(real, prog)))
     return _sin_nan(pd.DataFrame(filas), ['programado', 'comparacion', 'inicio', 'termino'])
 
@@ -179,6 +191,7 @@ def curva_programada(gantt: pd.DataFrame, actividades: pd.DataFrame):
     g = gantt[gantt['zona'].isna()] if not gantt.empty else gantt
     if g.empty:
         return pd.DataFrame(columns=['fecha', 'pct'])
+    actividades = planificadas(actividades)
     proy = actividades.groupby(['terreno_id', 'tipo'])['volumen_proyectado_m3'].sum()
     pesos = []
     for _, t in g.iterrows():
@@ -206,6 +219,10 @@ def curva_real(viajes: pd.DataFrame, ajustes: pd.DataFrame, total_proyectado: fl
     no queda en escalones). Si se da `inicio` (comienzo del programa), la curva parte en 0 ese día.
     La serie termina en el último día con datos (no se inventa avance después).
     """
+    if actividades is not None:  # la proforma (adicional) no entra a la curva
+        viajes = viajes[viajes['tipo'].fillna('') != 'adicional']
+        actividades = planificadas(actividades)
+        ajustes = ajustes[ajustes['actividad_id'].isin(actividades['id'])]
     if terreno_ids is not None:  # solo los sitios del alcance elegido (los tickets "General" quedan fuera)
         viajes = viajes[viajes['terreno_id'].isin(terreno_ids)]
         ajustes = ajustes[ajustes['actividad_id'].isin(actividades.loc[actividades['terreno_id'].isin(terreno_ids), 'id'])]
