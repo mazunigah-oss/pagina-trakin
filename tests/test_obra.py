@@ -283,7 +283,7 @@ def test_avance_en_fraccion_excel_y_m3(motor):
 def test_carga_inicial_loma_la_cruz_norte(motor):
     """Los archivos de data/carga_inicial (datos al 04/10/2026) cuadran con los totales del documento de obra."""
     d = RAIZ / 'data' / 'carga_inicial'
-    pasos = [('avance', '1_sitios_volumen_avance_programa.csv'), ('gantt', '1_sitios_volumen_avance_programa.csv'),
+    pasos = [('avance', '1_sitios_volumen_avance_programa.csv'), ('gantt', '5_programa_gantt.csv'),
              ('avance', '2_adicional_botadero.csv'), ('rellenos', '3_rellenos_densidades.csv'), ('hitos', '4_hitos.csv')]
     for tipo, archivo in pasos:
         rev = cargar(motor, tipo, (d / archivo).read_bytes(), archivo)
@@ -294,8 +294,33 @@ def test_carga_inicial_loma_la_cruz_norte(motor):
     assert acts.loc['corte', 'volumen_proyectado_m3'] == pytest.approx(41974.93, abs=0.01)
     assert acts.loc['corte', 'retirado_m3'] == pytest.approx(28364.56, abs=0.05)
     assert acts.loc['adicional', 'volumen_proyectado_m3'] == 4488
-    assert len(t['gantt']) == 25
+    assert len(t['gantt']) == 47  # carta Gantt nueva: todos los sitios menos el 4
     r = C.leer(motor, 'relleno')
     assert r['corte_m3'].sum() == pytest.approx(3353.8)
     assert r[['capas_acceso', 'capas_living', 'capas_calicata']].sum().sum() == 71
     assert len(C.leer(motor, 'hito')) == 3
+
+
+def test_gantt_excel_semanas_a_csv(tmp_path):
+    """El conversor lee semanas en columnas y celdas tipo "6-5" (sitios 6 y 5), incluso sin fecha en el encabezado."""
+    import subprocess
+    import sys
+    import openpyxl
+    from datetime import datetime
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws['A2'] = 'GANTT'
+    for i, col in enumerate(['C', 'D', 'E']):
+        ws[f'{col}3'] = datetime(2026, 7, 20 + 7 * i)
+        ws[f'{col}4'] = datetime(2026, 7, 24 + 7 * i)
+    ws['B6'] = 'Faenas previas'
+    ws['B7'], ws['C7'], ws['D7'] = 'Excavación', '6-5', 25
+    ws['B8'], ws['D8'], ws['F8'] = 'Relleno compactado', '6-5', 25   # F: columna sin fecha (semana siguiente a E)
+    xlsx = tmp_path / 'g.xlsx'
+    wb.save(xlsx)
+    salida = tmp_path / 'g.csv'
+    subprocess.run([sys.executable, str(RAIZ / 'scripts' / 'gantt_excel_a_csv.py'), str(xlsx), str(salida)], check=True)
+    filas = {f.split(';')[0]: f.split(';') for f in salida.read_text(encoding='utf-8-sig').splitlines()[1:]}
+    assert filas['6'][1:3] == ['2026-07-20', '2026-07-31']
+    assert filas['5'][1:3] == ['2026-07-20', '2026-07-31']
+    assert filas['25'][1:3] == ['2026-07-27', '2026-08-14']

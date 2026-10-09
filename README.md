@@ -30,12 +30,17 @@ En [`data/carga_inicial/`](data/carga_inicial) están los datos de obra listos p
 | # | Archivo | Tipo de carga |
 |---|---|---|
 | 1 | `1_sitios_volumen_avance_programa.csv` | Avance acumulado por sitio |
-| 2 | `1_sitios_volumen_avance_programa.csv` (el mismo) | Programa (carta Gantt) |
+| 2 | `5_programa_gantt.csv` (carta Gantt nueva, 47 sitios) | Programa (carta Gantt) |
 | 3 | `2_adicional_botadero.csv` | Avance acumulado por sitio |
 | 4 | `3_rellenos_densidades.csv` | Rellenos compactados y densidades |
 | 5 | `4_hitos.csv` | Hitos de la obra |
 
 Volumen proyectado = esponjado (excavación × 1,43), que es lo que trasladan los camiones.
+
+La carta Gantt en Excel (semanas en columnas, celdas como `6-5` = sitios 6 y 5) se convierte con
+`python scripts/gantt_excel_a_csv.py Gantt.xlsx data/carga_inicial/5_programa_gantt.csv`. Cada sitio va del lunes
+de su primera tarea ("Entrega de plataformas") al viernes de la última ("Relleno compactado").
+`5_programa_gantt_detalle.csv` tiene cada tarea por semana, solo como respaldo (no se sube).
 
 ## Archivos que se cargan
 
