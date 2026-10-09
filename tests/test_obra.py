@@ -306,13 +306,13 @@ def test_gantt_excel_semanas_a_csv(tmp_path):
     import subprocess
     import sys
     import openpyxl
-    from datetime import datetime
+    from datetime import datetime, timedelta
     wb = openpyxl.Workbook()
     ws = wb.active
     ws['A2'] = 'GANTT'
     for i, col in enumerate(['C', 'D', 'E']):
-        ws[f'{col}3'] = datetime(2026, 7, 20 + 7 * i)
-        ws[f'{col}4'] = datetime(2026, 7, 24 + 7 * i)
+        ws[f'{col}3'] = datetime(2026, 7, 20) + timedelta(days=7 * i)
+        ws[f'{col}4'] = datetime(2026, 7, 24) + timedelta(days=7 * i)
     ws['B6'] = 'Faenas previas'
     ws['B7'], ws['C7'], ws['D7'] = 'Excavación', '6-5', 25
     ws['B8'], ws['D8'], ws['F8'] = 'Relleno compactado', '6-5', 25   # F: columna sin fecha (semana siguiente a E)
