@@ -9,6 +9,7 @@ RANGO = {'sin_intervenir': 0, 'en_proceso': 1, 'entregado': 2, 'terminado': 2}
 # 'adicional' = proforma: volumen no considerado en la planificación inicial. Se muestra aparte y no
 # entra al avance, al programa ni a las curvas.
 PLANIFICADAS = ('escarpe', 'corte')
+TOLERANCIA_TERMINADO = 0.99
 
 
 def planificadas(acts: pd.DataFrame):
@@ -101,10 +102,11 @@ def comparar(real, programado):
 
 def estado_real_terreno(acts: pd.DataFrame):
     """Terminado si el administrador marcó ambas actividades como terminadas, o si ya se retiró
-    todo el volumen proyectado del sitio. En proceso si hay tickets o alguna actividad iniciada."""
+    el 99 % o más del volumen proyectado del sitio. En proceso si hay tickets o alguna actividad iniciada."""
     acts = planificadas(acts)
     proy = acts['volumen_proyectado_m3'].sum()
-    if (acts['estado'] == 'terminado').all() or (proy > 0 and acts['retirado_m3'].sum() >= proy):
+    # 99 %: las planillas redondean los m³ movidos (ej. 3.566 de 3.566,4 = 99,99 %)
+    if (acts['estado'] == 'terminado').all() or (proy > 0 and acts['retirado_m3'].sum() >= TOLERANCIA_TERMINADO * proy):
         return 'terminado'
     if (acts['estado'] != 'sin_intervenir').any() or (acts['retirado_m3'] > 0).any():
         return 'en_proceso'

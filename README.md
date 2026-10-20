@@ -42,6 +42,13 @@ La carta Gantt en Excel (semanas en columnas, celdas como `6-5` = sitios 6 y 5) 
 de su primera tarea ("Entrega de plataformas") al viernes de la última ("Relleno compactado").
 `5_programa_gantt_detalle.csv` tiene cada tarea por semana, solo como respaldo (no se sube).
 
+## Actualización al 19/10/2026
+
+En [`data/carga_2026-10-19/`](data/carga_2026-10-19) está el avance al 16/10 (planilla *Resumen x Terraza*, sin
+camino), los tickets del 19/10 y las terrazas entregadas (solo acceso y living), con el documento
+[`avance_al_19-10-2026.md`](data/carga_2026-10-19/avance_al_19-10-2026.md) que explica los supuestos.
+Se cargan sobre lo anterior en el orden indicado en ese documento.
+
 ## Archivos que se cargan
 
 Plantillas en la pestaña "Cargar datos" y ejemplos en [`data/ejemplos/`](data/ejemplos). CSV (`;` o `,`) o Excel.

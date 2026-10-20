@@ -343,3 +343,24 @@ def test_proforma_no_cuenta_y_diferencia_contra_gantt(motor):
     # la curva tampoco incluye la proforma
     real = C.curva_real(t['viaje'], t['ajuste'], 250, '2026-10-05', actividades=acts)
     assert real['m3'].iloc[-1] == pytest.approx(170)
+
+
+def test_carga_al_19_10(motor):
+    """Avance al 16/10 (planilla Resumen x Terraza) + tickets del 19/10 + terrazas entregadas, sobre la carga inicial."""
+    pasos = [('avance', 'carga_inicial/1_sitios_volumen_avance_programa.csv'), ('gantt', 'carga_inicial/5_programa_gantt.csv'),
+             ('avance', 'carga_inicial/2_adicional_botadero.csv'), ('avance', 'carga_2026-10-19/1_avance_al_16-10.csv'),
+             ('viajes', 'carga_2026-10-19/2_tickets_19-10.csv'), ('entregas', 'carga_2026-10-19/3_terrazas_entregadas.csv')]
+    for tipo, archivo in pasos:
+        rev = cargar(motor, tipo, (RAIZ / 'data' / archivo).read_bytes(), archivo)
+        assert rev.ok and not rev.errores, (archivo, rev.errores[:3])
+    t = tablas(motor)
+    plan16 = C.planificadas(C.volumenes(t['actividad'], t['viaje'], t['ajuste'], hasta='2026-10-16'))
+    assert plan16['volumen_proyectado_m3'].sum() == pytest.approx(45248.84, abs=0.05)
+    assert plan16['retirado_m3'].sum() == pytest.approx(31972, abs=0.5)
+    acts = C.volumenes(t['actividad'], t['viaje'], t['ajuste'], hasta='2026-10-19')
+    assert C.planificadas(acts)['retirado_m3'].sum() == pytest.approx(31972 + 417, abs=0.5)
+    p = C.programa_terrenos(t['terreno'], acts, t['gantt'], '2026-10-19').set_index('codigo')
+    assert p.loc['S-01', 'real'] == 'terminado'          # 3.566 de 3.566,4 m³ (99,99 %) cuenta como listo
+    assert p.loc['S-40', 'real'] == 'en_proceso'         # 96,4 %
+    z = t['zona'][t['zona']['estado'] == 'entregado']
+    assert z.groupby('zona').size().to_dict() == {'acceso': 13, 'living': 13}

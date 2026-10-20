@@ -550,6 +550,8 @@ class Avance(TipoArchivo):
             sel = acts[(acts['terreno_id'] == tid) & ((acts['tipo'] == tipo) if tipo else (acts['tipo'] != 'adicional'))]
             proy_total = float(sel['volumen_proyectado_m3'].sum())
             if m3 is None:
+                if proy_total <= 0 and pct == 0:
+                    continue  # sin volumen y sin avance: nada que ajustar
                 if proy_total <= 0:
                     rev.errores.append((n, 'Para usar % el sitio necesita volumen proyectado (agregue la columna '
                                            'volumen_proyectado_m3 o cárguelo antes)')); continue
