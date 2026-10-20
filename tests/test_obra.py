@@ -442,3 +442,33 @@ def test_carga_unica_movimiento_planilla_o_tabla(motor):
     assert s47['retirado_m3'].sum() == pytest.approx(170)
     assert (t['ajuste']['fecha'] == '2026-10-20').any()
     assert I.CARGAS_PRINCIPALES[0] == 'movimiento' and 'volumenes' not in I.CARGAS_PRINCIPALES + I.CARGAS_OTRAS
+
+
+def test_extra_sin_proyectado_y_sitios_repetidos(motor):
+    """Formato del usuario: 'Excavación adicional' con proyectado 0 y m³ movidos; un sitio repetido no se pisa."""
+    csv = ('sitio;fecha;avance_pct;m3_acumulados;volumen_proyectado_m3;actividad\n'
+           '30;19/10/2026;100;491;490,812;Corte\n'
+           '30;19/10/2026;0;228;0;Excavación adicional\n'
+           '12;19/10/2026;0;192;0;Corte\n'
+           '28;19/10/2026;7;23;347,858;Corte\n'
+           '28;19/10/2026;0;0;149,59;Corte\n').encode()
+    rev = I.revisar(motor, 'movimiento', csv, 'u.csv')
+    assert [f for f, _ in rev.errores] == [5, 6]                     # sitio 28 dos veces: se omite y se avisa
+    assert any('cargadas como extra: sitios 12' in m for _, m in rev.avisos)
+    I.aplicar(motor, 'movimiento', rev, 'u.csv')
+    t = tablas(motor)
+    acts = C.volumenes(t['actividad'], t['viaje'], t['ajuste'], hasta='2026-10-21').set_index(['terreno_id', 'tipo'])
+    assert acts.loc[(30, 'adicional'), 'retirado_m3'] == pytest.approx(228)
+    assert acts.loc[(12, 'adicional'), 'retirado_m3'] == pytest.approx(192)
+    assert acts.loc[(30, 'corte'), 'retirado_m3'] == pytest.approx(491)
+
+
+def test_csv_del_usuario_corregido(motor):
+    archivo = RAIZ / 'data' / 'carga_2026-10-19' / 'movimiento_al_16-10_corregido.csv'
+    rev = cargar(motor, 'movimiento', archivo.read_bytes(), archivo.name)
+    assert not rev.errores
+    t = tablas(motor)
+    g = C.volumenes(t['actividad'], t['viaje'], t['ajuste']).groupby('tipo')[['volumen_proyectado_m3', 'retirado_m3']].sum()
+    assert g.loc['corte', 'volumen_proyectado_m3'] == pytest.approx(45248.84, abs=0.05)
+    assert g.loc['corte', 'retirado_m3'] == pytest.approx(31972, abs=0.5)
+    assert g.loc['adicional', 'retirado_m3'] == pytest.approx(4992)

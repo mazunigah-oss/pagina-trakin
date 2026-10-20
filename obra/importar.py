@@ -510,7 +510,7 @@ class Avance(TipoArchivo):
         fraccion = bool(pcts) and all(isinstance(x, float) and 0 <= x <= 1 for x in pcts) and \
             not any('%' in str(valor(f, c['avance_pct']) or '') for f in filas)
         hoy = hoy_chile()
-        leidas, sin_avance = [], []
+        leidas, sin_avance, extra_auto = [], [], []
         for f in filas:
             n = f['_fila']
             codigo = norm_terreno(valor(f, c['sitio']))
@@ -534,7 +534,23 @@ class Avance(TipoArchivo):
                 pct *= 100
             if pct is not None and not 0 <= pct <= 150:
                 rev.errores.append((n, f'Avance fuera de rango: {pct_txt}')); continue
+            if proy == 0 and m3 and m3 > 0 and tipo != 'adicional':
+                tipo = 'adicional'  # m³ movidos sin volumen proyectado = extra (no considerado en la planificación)
+                extra_auto.append(codigo)
             leidas.append((fecha, n, terrenos[codigo].id, tipo, pct, m3, proy))
+
+        # un mismo sitio y actividad repetido en la misma fecha suele ser un número de sitio mal escrito
+        claves = {}
+        for x in leidas:
+            claves.setdefault((x[0], x[2], x[3]), []).append(x[1])
+        repetidas = {k: v for k, v in claves.items() if len(v) > 1}
+        if repetidas:
+            nombre_t = {t.id: c for c, t in terrenos.items()}
+            for (fch, tid, tp), filas_r in repetidas.items():
+                for n in filas_r:
+                    rev.errores.append((n, f'El sitio {nombre_t[tid][2:].lstrip("0")} aparece repetido en las filas '
+                                           f'{", ".join(map(str, filas_r))} (revise el número de sitio); se omite'))
+            leidas = [x for x in leidas if (x[0], x[2], x[3]) not in repetidas]
 
         # volúmenes proyectados informados en el mismo archivo (se aplican antes de calcular el %)
         for fecha, n, tid, tipo, pct, m3, proy in leidas:
@@ -565,7 +581,12 @@ class Avance(TipoArchivo):
                 m3 = pct / 100 * proy_total
             aj = pd.concat([ajustes, pd.DataFrame(pendientes, columns=['actividad_id', 'fecha', 'volumen_m3'])])
             actual = volumenes(acts, viajes, aj, hasta=fecha).set_index('id')['retirado_m3']
-            pesos = sel['volumen_proyectado_m3'] if proy_total > 0 else (sel['tipo'] == 'corte').astype(float)
+            if proy_total > 0:
+                pesos = sel['volumen_proyectado_m3']
+            elif (sel['tipo'] == 'corte').any():
+                pesos = (sel['tipo'] == 'corte').astype(float)
+            else:  # ej. extra sin volumen proyectado
+                pesos = pd.Series(1.0, index=sel.index)
             for (_, a), peso in zip(sel.iterrows(), pesos):
                 objetivo = m3 * peso / pesos.sum()
                 delta = objetivo - float(actual[a['id']])
@@ -578,6 +599,9 @@ class Avance(TipoArchivo):
         for aid, v in cambios_proy.items():
             if abs(v - originales[aid]) > 1e-9:
                 rev.ops.insert(0, dict(tipo='proyectado', id=aid, volumen=v))
+        if extra_auto:
+            rev.avisos.append((None, 'Filas sin volumen proyectado y con m³ movidos, cargadas como extra: sitios '
+                                     + ', '.join(c[2:].lstrip('0') for c in extra_auto)))
         if sin_avance:
             rev.avisos.append((None, f'Sin dato de avance (solo se carga el volumen): {", ".join(sin_avance)}'))
         rev.resumen = dict(sitios=len({x[2] for x in leidas}), cortes_leidos=len(leidas) - len(sin_avance),
