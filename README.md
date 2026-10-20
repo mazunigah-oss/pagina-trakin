@@ -55,6 +55,7 @@ Plantillas en la pestaña "Cargar datos" y ejemplos en [`data/ejemplos/`](data/e
 
 | Archivo | Modo | Columnas |
 |---|---|---|
+| Planilla **Resumen x Terraza** (Excel de obra, tal cual) | **ACTUALIZA** | Se sube sin modificar indicando la fecha de los datos. Lee escarpe, corte, esponjado y m³ a botadero por sitio; las filas *EXC ADICIONAL* y las filas sin presupuesto con volumen se cargan como extra (proforma); el camino se ignora; los números de sitio mal escritos se reconocen por sus volúmenes |
 | Tickets de la máquina | **SUMA** | `TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO` — tal como sale de la máquina |
 | Avance acumulado por sitio | **ACTUALIZA** | `sitio;fecha;avance_pct` (o `m3_acumulados`; opcional `volumen_proyectado_m3`, `actividad`) — para cuando no hay tickets: deja el sitio en ese avance a esa fecha |
 | Programa (Gantt) | **REEMPLAZA** | `sitio;inicio;termino` (+ opcional `actividad`, `zona`, `tarea`) |

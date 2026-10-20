@@ -571,7 +571,7 @@ if ADMIN:
             st.success(f'✅ Carga guardada: **{titulo}** ({nombre}) — '
                        + ' · '.join(f"{k.replace('_', ' ')}: {v}" for k, v in resumen.items()))
         for tipo in I.TIPOS.values():
-            with st.expander(f'{tipo.titulo} · {tipo.modo}', expanded=tipo.id == 'viajes'):
+            with st.expander(f'{tipo.titulo} · {tipo.modo}', expanded=tipo.id == 'planilla'):
                 st.caption(tipo.ayuda)
                 st.dataframe(pd.DataFrame([dict(Columna=c.campo.upper() if tipo.id == 'viajes' else c.campo,
                                                 Obligatoria='sí' if c.requerido else '', Ejemplo=c.ejemplo,
@@ -579,18 +579,23 @@ if ADMIN:
                              hide_index=True, use_container_width=True)
                 st.download_button('Descargar plantilla', I.plantilla(tipo.id), f'plantilla_{tipo.id}.csv',
                                    'text/csv', key=f'pl_{tipo.id}')
+                opciones = {}
+                if tipo.id == 'planilla':
+                    opciones['fecha'] = st.date_input('Fecha de los datos de la planilla', value=date.fromisoformat(dia),
+                                                      format='DD/MM/YYYY', key='fecha_planilla').isoformat()
                 archivo = st.file_uploader('Archivo', type=['csv', 'txt', 'xlsx'], key=f'up_{tipo.id}')
                 clave_rev = f'rev_{tipo.id}'
                 if archivo is None:
                     st.session_state.pop(clave_rev, None)
                     continue
                 contenido = archivo.getvalue()
+                firma = (archivo.name, len(contenido), json.dumps(opciones))
                 if st.button('Revisar archivo', key=f'rv_{tipo.id}'):
-                    st.session_state[clave_rev] = (archivo.name, len(contenido), I.revisar(MOTOR, tipo.id, contenido, archivo.name))
+                    st.session_state[clave_rev] = (*firma, I.revisar(MOTOR, tipo.id, contenido, archivo.name, opciones))
                 guardado = st.session_state.get(clave_rev)
-                if not guardado or guardado[:2] != (archivo.name, len(contenido)):
+                if not guardado or guardado[:3] != firma:
                     continue
-                rev = guardado[2]
+                rev = guardado[3]
                 if not rev.ok:
                     if rev.faltan_columnas:
                         st.error(f"Faltan columnas: {', '.join(rev.faltan_columnas)}. "

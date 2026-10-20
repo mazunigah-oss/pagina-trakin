@@ -29,7 +29,7 @@ def clave(s):
 
 def leer_tabla(contenido: bytes, nombre: str = '', conocidas=()) -> pd.DataFrame:
     """Lee CSV (; , o tab; UTF-8 o Latin-1) o Excel. Devuelve texto sin convertir, con columnas normalizadas.
-    La fila de encabezados es la primera (de las 15 primeras) que contiene algún nombre de columna conocido."""
+    La fila de encabezados es la que tiene más nombres de columna conocidos (entre las 30 primeras)."""
     if nombre.lower().endswith(('.xlsx', '.xls')) or contenido[:2] == b'PK':
         crudo = pd.read_excel(io.BytesIO(contenido), dtype=object, header=None)
     else:
@@ -41,14 +41,20 @@ def leer_tabla(contenido: bytes, nombre: str = '', conocidas=()) -> pd.DataFrame
         sep = max([';', ',', '\t'], key=lambda c: sum(l.count(c) for l in lineas))
         crudo = pd.read_csv(io.StringIO(texto), sep=sep, dtype=str, keep_default_na=False, skip_blank_lines=True,
                             header=None, engine='python', on_bad_lines='skip')
-    fila_enc = 0
+    # encabezado: la fila (de las 30 primeras) con más nombres de columna conocidos; ante empate, la primera
+    fila_enc, mejor = 0, 0
     conocidas = set(conocidas)
-    for i in range(min(15, len(crudo))):
-        if conocidas & {clave(v) for v in crudo.iloc[i] if not vacio(v)}:
-            fila_enc = i
-            break
+    for i in range(min(30, len(crudo))):
+        n = len(conocidas & {clave(v) for v in crudo.iloc[i] if not vacio(v)})
+        if n > mejor:
+            fila_enc, mejor = i, n
     df = crudo.iloc[fila_enc + 1:].copy()
-    df.columns = [clave(c) if not vacio(c) else f'col_{j}' for j, c in enumerate(crudo.iloc[fila_enc])]
+    nombres, vistos = [], {}
+    for j, c in enumerate(crudo.iloc[fila_enc]):
+        k = clave(c) if not vacio(c) else f'col_{j}'
+        vistos[k] = vistos.get(k, 0) + 1
+        nombres.append(k if vistos[k] == 1 else f'{k}_{vistos[k]}')  # columnas repetidas: la primera manda
+    df.columns = nombres
     df.index = range(fila_enc + 1, fila_enc + 1 + len(df))  # para que _fila coincida con la fila del archivo
     df = df.dropna(how='all')
     df = df[~df.apply(lambda f: all(str(v).strip() in ('', 'nan', 'None', 'NaT') for v in f), axis=1)]
@@ -208,6 +214,7 @@ class Revision:
     errores: list = field(default_factory=list)   # (fila, mensaje): se omiten
     avisos: list = field(default_factory=list)    # (fila, mensaje): se cargan igual
     ops: list = field(default_factory=list)
+    opciones: dict = field(default_factory=dict)   # datos extra elegidos en pantalla (ej. fecha de la planilla)
 
     @property
     def hay_cambios(self):
@@ -667,6 +674,123 @@ class Hitos(TipoArchivo):
         con.execute(insert(T.hito), [dict(o, carga_id=carga_id) for o in ops])
 
 
+class Planilla(TipoArchivo):
+    id = 'planilla'
+    titulo = 'Planilla "Resumen x Terraza" (Excel de obra, tal cual)'
+    modo = 'ACTUALIZA'
+    ayuda = ('Suba el Excel "Resumen x Terraza" sin modificarlo e indique la fecha de los datos. Se lee el bloque '
+             '"Control diario mov tierra" (Sitio, Escarpe, Corte geométrico, Esc + corte c/esp, a botadero). '
+             'Las filas "EXC ADICIONAL" y las filas sin presupuesto con volumen a botadero se cargan como extra '
+             '(proforma). El camino no se considera. Si un número de sitio está mal escrito en la planilla, el sitio '
+             'se reconoce por sus volúmenes y se avisa.')
+    columnas = [
+        Columna('sitio', (), True, '15'),
+        Columna('escarpe', (), True, '99,01'),
+        Columna('corte_geometrico', (), True, '734,03'),
+        Columna('esc_corte_c_esp', ('esc_corte_esponjado',), False, '1166,26', 'Si falta, se usa 1,4'),
+        Columna('a_botadero', ('botadero',), True, '192'),
+    ]
+
+    def validar(self, con, df, rev):
+        fecha = rev.opciones.get('fecha') or hoy_chile()
+        c = {x.campo: x for x in self.columnas}
+        terrenos = mapa_terrenos(con)
+        acts = pd.read_sql(select(T.actividad), con)
+        sitio_id = {t.id: int(cod[2:]) for cod, t in terrenos.items() if t.tipo == 'sitio'}
+        db = {}  # sitio -> (escarpe esponjado, corte esponjado) ya cargados
+        for _, a in acts[acts['terreno_id'].isin(sitio_id)].iterrows():
+            e, k = db.get(sitio_id[a['terreno_id']], (0.0, 0.0))
+            db[sitio_id[a['terreno_id']]] = (e + a['volumen_proyectado_m3'], k) if a['tipo'] == 'escarpe' else \
+                (e, k + a['volumen_proyectado_m3']) if a['tipo'] == 'corte' else (e, k)
+        normales, extra = [], []
+        for f in df.to_dict('records'):
+            n = f['_fila']
+            etiqueta = norm_numero(valor(f, c['sitio']))
+            if etiqueta in (None, VACIO) or not 1 <= etiqueta <= 48 or etiqueta != int(etiqueta):
+                continue  # filas de títulos, totales o vacías
+            nums = [norm_numero(valor(f, c[k])) for k in ('escarpe', 'corte_geometrico', 'esc_corte_c_esp', 'a_botadero')]
+            if VACIO in nums:
+                rev.errores.append((n, 'Valor no numérico en escarpe, corte o a botadero')); continue
+            esc, cor, esp, bot = (x or 0.0 for x in nums)
+            texto_b = ' '.join(str(v) for k, v in f.items() if k.startswith('col_') and not vacio(v)).lower()
+            if 'adicional' in texto_b or (esc + cor == 0 and bot > 0):
+                extra.append((n, int(etiqueta), bot, 'EXC ADICIONAL' if 'adicional' in texto_b else 'sin presupuesto'))
+                continue
+            factor = esp / (esc + cor) if esc + cor > 0 and esp > 0 else 1.4
+            normales.append(dict(fila=n, etiqueta=int(etiqueta), esc=esc, cor=cor, f=factor, bot=bot))
+
+        # identificar cada fila: por su número, o por sus volúmenes ya cargados si el número no calza
+        if not any(de or dc for de, dc in db.values()):
+            db = {}  # base sin volúmenes: no hay con qué comparar
+        con_escarpe = any(de for de, _ in db.values())
+
+        def candidatos(r):
+            out = set()
+            for s, (de, dc) in db.items():
+                ok_c = any(abs(dc - r['cor'] * f) < 0.06 for f in (r['f'], 1.4, 1.43))
+                ok_e = abs(de - r['esc'] * r['f']) < 0.06 if con_escarpe else True
+                if ok_c and ok_e:
+                    out.add(s)
+            return out
+        repetidas = {e for e in (r['etiqueta'] for r in normales) if sum(x['etiqueta'] == e for x in normales) > 1}
+        asignado = {}
+        for r in normales:
+            cand = candidatos(r) if db else set()
+            if r['etiqueta'] in cand or (not db and r['etiqueta'] not in repetidas):
+                asignado[r['fila']] = r['etiqueta']
+            elif len(cand) == 1:
+                asignado[r['fila']] = next(iter(cand))
+        for _ in range(3):  # resolver por descarte los ambiguos (ej. sitios con el mismo volumen)
+            usados = set(asignado.values())
+            for r in normales:
+                if r['fila'] not in asignado:
+                    libres = candidatos(r) - usados if db else set()
+                    if len(libres) == 1:
+                        asignado[r['fila']] = next(iter(libres))
+                        usados.add(asignado[r['fila']])
+        filas_av = []
+        cambiados = []
+        for r in normales:
+            s = asignado.get(r['fila'])
+            if s is None:
+                rev.errores.append((r['fila'], f'No se pudo identificar el sitio (la planilla dice {r["etiqueta"]}); '
+                                               'corrija el número en la planilla')); continue
+            if list(asignado.values()).count(s) > 1:
+                rev.errores.append((r['fila'], f'El sitio {s} aparece más de una vez')); continue
+            if s != r['etiqueta']:
+                cambiados.append(f'fila {r["fila"]}: dice {r["etiqueta"]}, es el sitio {s}')
+            tot = r['esc'] + r['cor']
+            for tipo, geo in (('escarpe', r['esc']), ('corte', r['cor'])):
+                filas_av.append(dict(_fila=r['fila'], sitio=s, actividad=tipo, fecha=fecha,
+                                     volumen_proyectado_m3=round(geo * r['f'], 3),
+                                     m3_acumulados=round(r['bot'] * geo / tot, 3) if tot > 0 else 0.0))
+        por_sitio = {}
+        for n, s, bot, origen in extra:
+            por_sitio[s] = por_sitio.get(s, 0.0) + bot
+        for s, bot in por_sitio.items():
+            filas_av.append(dict(_fila=100000 + s, sitio=s, actividad='adicional', fecha=fecha,
+                                 volumen_proyectado_m3=bot, m3_acumulados=bot))
+        if cambiados:
+            rev.avisos.append((None, 'Números de sitio corregidos por sus volúmenes: ' + '; '.join(cambiados)))
+        if extra:
+            rev.avisos.append((None, 'Extra (proforma): ' + ', '.join(
+                f'sitio {s} {num_txt(b)} m³ ({o})' for _, s, b, o in extra)))
+        errores_previos = list(rev.errores)
+        Avance().validar(con, pd.DataFrame(filas_av), rev)
+        rev.errores = errores_previos + [e for e in rev.errores if e not in errores_previos]
+        rev.resumen = dict(fecha=fecha, sitios=len({f['sitio'] for f in filas_av if f['actividad'] != 'adicional'}),
+                           m3_a_botadero=float(round(sum(r['bot'] for r in normales), 1)),
+                           extra_m3=float(round(sum(por_sitio.values()), 1)),
+                           ajustes_de_volumen=sum(o['tipo'] == 'ajuste' for o in rev.ops))
+
+    def aplicar(self, con, ops, carga_id):
+        Avance().aplicar(con, ops, carga_id)
+
+
+def num_txt(x):
+    return f'{x:,.0f}'.replace(',', '.')
+
+
 class Ajustes(TipoArchivo):
     id = 'ajustes'
     titulo = 'Ajustes manuales de volumen (topografía)'
@@ -703,13 +827,15 @@ class Ajustes(TipoArchivo):
         con.execute(insert(T.ajuste), [dict(o, carga_id=carga_id) for o in ops])
 
 
-TIPOS = {t.id: t for t in (Viajes(), Avance(), Gantt(), Volumenes(), Entregas(), Ajustes(), Hitos())}
-DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste, 'hitos': T.hito}
+TIPOS = {t.id: t for t in (Planilla(), Viajes(), Avance(), Gantt(), Volumenes(), Entregas(), Ajustes(), Hitos())}
+DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste, 'planilla': T.ajuste,
+               'hitos': T.hito}
 
 
-def revisar(motor, tipo, contenido, nombre=''):
+def revisar(motor, tipo, contenido, nombre='', opciones=None):
     t = TIPOS[tipo]
-    rev = Revision()
+    rev = Revision(opciones=dict(opciones or {}))
+    T.sembrar(motor)  # asegura que existan todas las actividades (ej. 'adicional' en bases antiguas)
     try:
         df = leer_tabla(contenido, nombre, {k for c in t.columnas for k in (c.campo, *c.alias)})
     except Exception as e:  # archivo corrupto o formato desconocido

@@ -388,3 +388,36 @@ def test_dia_anterior_con_movimiento():
     v = pd.DataFrame({'fecha': ['2026-10-16', '2026-10-19']})
     assert C.dia_anterior_con_movimiento(v, '2026-10-20') == '2026-10-19'
     assert C.dia_anterior_con_movimiento(v, '2026-10-19') == '2026-10-16'   # fin de semana sin tickets
+
+
+def test_planilla_resumen_x_terraza_con_adicionales(motor):
+    """El Excel de obra se sube tal cual: lee extra (EXC ADICIONAL y filas sin presupuesto) y corrige
+    los números de sitio mal escritos (filas 52-68) comparando volúmenes."""
+    for tipo, archivo in [('avance', 'carga_inicial/1_sitios_volumen_avance_programa.csv'),
+                          ('avance', 'carga_2026-10-19/1_avance_al_16-10.csv')]:
+        cargar(motor, tipo, (RAIZ / 'data' / archivo).read_bytes(), archivo)
+    # se borran los ajustes del 16/10 para que la planilla tenga que volver a crearlos
+    with motor.begin() as con:
+        con.execute(T.ajuste.delete().where(T.ajuste.c.fecha == '2026-10-16'))
+    xlsx = (RAIZ / 'data' / 'fuente' / 'Resumen_x_Terraza_16-10-2026.xlsx').read_bytes()
+    rev = I.revisar(motor, 'planilla', xlsx, 'Resumen_x_Terraza.xlsx', {'fecha': '2026-10-16'})
+    assert rev.ok and not rev.errores, rev.errores[:3]
+    assert rev.resumen['extra_m3'] == 4992 and rev.resumen['m3_a_botadero'] == 31972
+    assert any('dice 26, es el sitio 29' in m for _, m in rev.avisos)
+    I.aplicar(motor, 'planilla', rev, 'Resumen_x_Terraza.xlsx')
+    t = tablas(motor)
+    acts = C.volumenes(t['actividad'], t['viaje'], t['ajuste'], hasta='2026-10-16')
+    g = acts.groupby('tipo')['retirado_m3'].sum()
+    assert g['adicional'] == pytest.approx(4992) and g['escarpe'] + g['corte'] == pytest.approx(31972, abs=0.5)
+    e = C.estado_sitios(t['terreno'], acts, t['zona'], t['gantt'], '2026-10-16').set_index('codigo')
+    assert e.loc['S-32', 'tiene_extra'] and e.loc['S-32', 'retirado_extra_m3'] == pytest.approx(1095)
+    assert e.loc['S-12', 'retirado_extra_m3'] == pytest.approx(192)
+    assert e.loc['S-29', 'pct_plan'] == pytest.approx(238 / 664.608, rel=1e-3)   # fila 52 (dice 26)
+
+
+def test_actividades_faltantes_se_crean_al_revisar(motor):
+    from sqlalchemy import text
+    with motor.begin() as con:
+        con.execute(text("delete from actividad where tipo = 'adicional'"))
+    rev = I.revisar(motor, 'avance', b'sitio;actividad;fecha;volumen_proyectado_m3;avance_pct\n30;adicional;2026-10-16;228;100\n')
+    assert not rev.errores
