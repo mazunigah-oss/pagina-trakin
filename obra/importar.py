@@ -703,9 +703,8 @@ class Ajustes(TipoArchivo):
         con.execute(insert(T.ajuste), [dict(o, carga_id=carga_id) for o in ops])
 
 
-TIPOS = {t.id: t for t in (Viajes(), Avance(), Gantt(), Volumenes(), Entregas(), Ajustes(), Rellenos(), Hitos())}
-DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste,
-               'rellenos': T.relleno, 'hitos': T.hito}
+TIPOS = {t.id: t for t in (Viajes(), Avance(), Gantt(), Volumenes(), Entregas(), Ajustes(), Hitos())}
+DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste, 'hitos': T.hito}
 
 
 def revisar(motor, tipo, contenido, nombre=''):

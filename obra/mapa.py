@@ -1,24 +1,16 @@
-"""Plano interactivo (Plotly) con las terrazas coloreadas."""
+"""Plano (Plotly) como imagen fija: sin zoom ni arrastre, con información al pasar el cursor y,
+si se pide, sitios seleccionables con un clic."""
 import json
 
 import plotly.graph_objects as go
 
-COLORES = {
-    'sin_intervenir': '#d5dbd6', 'en_proceso': '#e9a23b', 'entregado': '#2f9e6b', 'terminado': '#2f9e6b',
-    'atrasado': '#d64545', 'al_dia': '#2f9e6b', 'adelantado': '#3b7dd8', None: '#eef0ee',
-}
-NOMBRES = {
-    'sin_intervenir': 'Sin intervenir', 'en_proceso': 'En proceso', 'entregado': 'Entregado', 'terminado': 'Terminado',
-    'atrasado': 'Atrasado', 'al_dia': 'Al día', 'adelantado': 'Adelantado', None: 'Sin programa',
-}
 ZONAS = {'acceso': 'Acceso', 'living': 'Living', 'fondo_patio': 'Fondo de patio', 'unica': 'Zona única'}
-ESCALA = ['#e6f2ea', '#b9dcc6', '#84c2a0', '#4fa379', '#2a7f57', '#17583b']
+# configuración de st.plotly_chart para que el mapa sea una imagen fija
+CONFIG_FIJO = {'displayModeBar': False, 'scrollZoom': False, 'doubleClick': False, 'showTips': False}
 
 
-def color_avance(av):
-    if av is None or av != av:  # None o NaN
-        return COLORES[None]
-    return ESCALA[min(len(ESCALA) - 1, int(min(av, 1) * (len(ESCALA) - 1) + 1e-9))]
+def puntos(p):
+    return json.loads(p) if isinstance(p, str) else p
 
 
 def centroide(pts):
@@ -31,9 +23,10 @@ def centroide(pts):
     return (cx / (3 * a), cy / (3 * a)) if a else tuple(pts[0])
 
 
-def figura(geo, zonas, color_de, hover_de, leyenda, seleccion=None, alto=680):
-    """zonas: DataFrame con poligono, zona, terreno_id, codigo, nombre.
-    color_de / hover_de: funciones fila -> color / texto. leyenda: [(color, texto)]."""
+def figura(geo, poligonos, color_de, hover_de, etiquetas=(), marcas=(), clic=(), alto=600, borde='#ffffff'):
+    """poligonos: filas (dict o Series) con 'poligono' y los datos que usen color_de / hover_de.
+    etiquetas: [(x, y, texto)] números de sitio. marcas: [(x, y, texto)] emojis (✅ ⚠️ 📌).
+    clic: [(x, y, terreno_id, hover)] puntos seleccionables (st.plotly_chart con on_select)."""
     fig = go.Figure()
     xs, ys = [], []
     for linea in geo['fondo']:
@@ -44,27 +37,29 @@ def figura(geo, zonas, color_de, hover_de, leyenda, seleccion=None, alto=680):
         ys.append(None)
     fig.add_trace(go.Scatter(x=xs, y=ys, mode='lines', line=dict(color='#a3aca6', width=0.7),
                              hoverinfo='skip', showlegend=False))
-    etiquetas = []
-    for _, z in zonas.iterrows():
-        pts = json.loads(z['poligono']) if isinstance(z['poligono'], str) else z['poligono']
-        sel = seleccion is not None and z['terreno_id'] == seleccion
+    for z in poligonos:
+        pts = puntos(z['poligono'])
         fig.add_trace(go.Scatter(
             x=[p[0] for p in pts] + [pts[0][0]], y=[p[1] for p in pts] + [pts[0][1]],
             mode='lines', fill='toself', fillcolor=color_de(z), hoveron='fills',
-            line=dict(color='#1d2320' if sel else '#ffffff', width=2.2 if sel else 0.8),
-            text=hover_de(z), hoverinfo='text', showlegend=False, name=z['codigo']))
-        if z['zona'] in ('living', 'unica'):
-            cx, cy = centroide(pts)
-            etiquetas.append((cx, cy, str(int(z['codigo'][2:])) if z['codigo'].startswith('S-') else z['codigo']))
-    fig.add_trace(go.Scatter(x=[e[0] for e in etiquetas], y=[e[1] for e in etiquetas], text=[e[2] for e in etiquetas],
-                             mode='text', textfont=dict(size=10, color='#1d2320'), hoverinfo='skip', showlegend=False))
-    for color, texto in leyenda:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', name=texto,
-                                 marker=dict(size=12, color=color, symbol='square')))
-    fig.update_xaxes(visible=False, range=[0, geo['ancho']], constrain='domain')
-    fig.update_yaxes(visible=False, range=[geo['alto'], 0], scaleanchor='x', scaleratio=1, constrain='domain')
-    fig.update_layout(height=alto, margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)',
-                      paper_bgcolor='rgba(0,0,0,0)', hoverlabel=dict(bgcolor='white'),
-                      legend=dict(orientation='h', yanchor='bottom', y=1.0, x=0), dragmode='pan',
-                      showlegend=bool(leyenda))
+            line=dict(color=borde, width=0.9), text=hover_de(z), hoverinfo='text', showlegend=False))
+    if etiquetas:  # (x, y, texto) o (x, y, texto, color)
+        fig.add_trace(go.Scatter(x=[e[0] for e in etiquetas], y=[e[1] for e in etiquetas], text=[e[2] for e in etiquetas],
+                                 mode='text', hoverinfo='skip', showlegend=False,
+                                 textfont=dict(size=10, color=[e[3] if len(e) > 3 else '#1d2320' for e in etiquetas])))
+    if marcas:
+        fig.add_trace(go.Scatter(x=[m[0] for m in marcas], y=[m[1] for m in marcas], text=[m[2] for m in marcas],
+                                 mode='text', textfont=dict(size=11), hoverinfo='skip', showlegend=False))
+    if clic:
+        fig.add_trace(go.Scatter(
+            x=[c[0] for c in clic], y=[c[1] for c in clic], customdata=[c[2] for c in clic],
+            text=[c[3] for c in clic], hoverinfo='text', mode='markers', showlegend=False,
+            marker=dict(size=26, color='rgba(0,0,0,0.01)'),
+            selected=dict(marker=dict(color='rgba(29,35,32,0.25)')), unselected=dict(marker=dict(opacity=1))))
+    fig.update_xaxes(visible=False, range=[0, geo['ancho']], constrain='domain', fixedrange=True)
+    fig.update_yaxes(visible=False, range=[geo['alto'], 0], scaleanchor='x', scaleratio=1, constrain='domain',
+                     fixedrange=True)
+    fig.update_layout(height=alto, margin=dict(l=0, r=0, t=4, b=0), plot_bgcolor='rgba(0,0,0,0)',
+                      paper_bgcolor='rgba(0,0,0,0)', hoverlabel=dict(bgcolor='white'), dragmode=False,
+                      showlegend=False, clickmode='event+select' if clic else 'none')
     return fig

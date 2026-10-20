@@ -12,16 +12,17 @@ Requerimientos y decisiones: [`docs/01-analisis-requerimientos.md`](docs/01-anal
 
 | Pestaña | Contenido |
 |---|---|
-| Resumen | Avance %, m³ retirados vs. los que deberían ir según la Gantt (+/− m³), mapa de sitios listos / en trabajos y camiones de hoy comparados con ayer |
-| Curva de avance | Curvas programada, real y proyectada al ritmo actual: fecha estimada de término, % que se alcanzaría a la fecha de término programada y ritmo necesario para terminar a tiempo |
-| Entregas | Plano con las 144 terrazas + edificios según su estado (sin intervenir / en proceso / entregado) |
-| Programa | Dos mapas: a la izquierda cómo vamos (rojo atrasado, verde según Gantt, azul adelantado) y a la derecha cómo deberíamos ir (verde listo, amarillo en trabajos), con la explicación de colores abajo |
-| Movimiento de tierra | % de avance (m³ retirados / proyectados) por sitio, con el detalle del cálculo |
+| Resumen | Movimiento de camiones del día anterior; avance de movimiento de tierra, extra y cumplimiento; **Mapa de intervención** (sitios al 100 % / con intervención, ⚠️ = movimiento extra) y **Mapa de entregas y cumplimiento** (acceso y living: ✅ entregada, ⚠️ debería estar entregada según la carta Gantt) |
+| Entregas | Mapa de entregas y detalle por sitio: estado de cada terraza, fecha de la carta Gantt y cumplimiento |
+| Programa | Dos mapas: cómo deberíamos ir según la carta Gantt (verde = 100 % y ✅ entregados, amarillo = con intervención) y qué está pasando (✅ entregados, verde = movimiento sobre 95 %, amarillo = con intervención) |
+| Movimiento de tierra | Escarpe, corte y extra como en la hoja resumen; mapa por sitio (clic para ver el detalle) con notas 📌 (responsable, fecha y hora; el administrador agrega actualizaciones) |
 | Tickets | Tickets de la máquina filtrables por fecha |
 | Cargar datos *(admin)* | Subida de archivos con revisión previa, historial y deshacer |
-| Editar estados *(admin)* | Tabla editable de estados de terrazas, escarpe/corte y volúmenes proyectados |
+| Editar estados *(admin)* | Tabla editable de estados de terrazas y volúmenes |
 
-El selector **Ver al día** muestra la obra en cualquier fecha.
+**Reglas:** el avance de movimiento de tierra es m³ retirados / m³ proyectados (no depende de la carta Gantt). Un sitio
+**cumple la carta Gantt** cuando sus terrazas de **acceso y living** están entregadas; el fondo de patio no se considera.
+Los mapas son imágenes fijas (sin zoom) con información al pasar el cursor.
 
 ## Carga inicial Loma La Cruz Norte (datos al 04/10/2026)
 
@@ -32,7 +33,6 @@ En [`data/carga_inicial/`](data/carga_inicial) están los datos de obra listos p
 | 1 | `1_sitios_volumen_avance_programa.csv` | Avance acumulado por sitio |
 | 2 | `5_programa_gantt.csv` (carta Gantt nueva, 47 sitios) | Programa (carta Gantt) |
 | 3 | `2_adicional_botadero.csv` | Avance acumulado por sitio |
-| 4 | `3_rellenos_densidades.csv` | Rellenos compactados y densidades |
 | 5 | `4_hitos.csv` | Hitos de la obra |
 
 Volumen proyectado = esponjado (excavación × 1,43), que es lo que trasladan los camiones.
@@ -60,7 +60,6 @@ Plantillas en la pestaña "Cargar datos" y ejemplos en [`data/ejemplos/`](data/e
 | Programa (Gantt) | **REEMPLAZA** | `sitio;inicio;termino` (+ opcional `actividad`, `zona`, `tarea`) |
 | Volúmenes proyectados | **ACTUALIZA** | `sitio;actividad;volumen_proyectado_m3;estado` |
 | Entregas de terrazas | **ACTUALIZA** | `sitio;zona;estado;fecha_entrega` |
-| Rellenos y densidades | **REEMPLAZA** | `sitio;corte_m3;relleno_m3;capas_acceso;capas_living;capas_calicata;entrega` (`P` = pendiente) |
 | Hitos | **REEMPLAZA** | `hito;fecha` |
 | Ajustes (topografía) | **SUMA** | `sitio;actividad;fecha;volumen_m3;motivo` |
 

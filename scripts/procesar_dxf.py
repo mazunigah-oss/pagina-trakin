@@ -176,9 +176,16 @@ def main():
         pts = [T(x, y) for x, y in l.simplify(30).coords]
         if all(-5 < x < ancho + 5 and -5 < y < alto + 5 for x, y in pts):
             fondo.append(pts)
+    # contorno de cada sitio (unión de sus terrazas), para los mapas sin divisiones de terrazas
+    sitios = []
+    for n in range(1, 49):
+        lote = unary_union([p for m, _, p in zonas if m == n])
+        lote = lote if lote.geom_type == 'Polygon' else max(lote.geoms, key=lambda g: g.area)
+        sitios.append(dict(terreno='S-%02d' % n, puntos=anillo(lote)))
+    sitios += [dict(terreno='ED-%d' % (i + 1), puntos=anillo(p)) for i, p in enumerate(edificios)]
     with open(salida, 'w') as f:
         json.dump(dict(fuente=dxf_path.split('/')[-1], unidad='m', ancho=ancho, alto=alto,
-                       terrenos=terrenos, zonas=out_zonas, fondo=fondo), f, ensure_ascii=False)
+                       terrenos=terrenos, zonas=out_zonas, sitios=sitios, fondo=fondo), f, ensure_ascii=False)
     print(f'{len(out_zonas)} zonas ({len(zonas)} terrazas + {len(edificios)} edificios) escritas en {salida}')
 
 

@@ -170,8 +170,7 @@ def test_app_streamlit_arranca(tmp_path, monkeypatch):
     monkeypatch.setenv('ADMIN_PASSWORD', 'clave')
     at = AppTest.from_file(str(RAIZ / 'streamlit_app.py'), default_timeout=60).run()
     assert not at.exception
-    assert [t.label for t in at.tabs][:7] == ['Resumen', 'Curva de avance', 'Entregas', 'Programa',
-                                              'Movimiento de tierra', 'Rellenos', 'Tickets']
+    assert [t.label for t in at.tabs][:5] == ['Resumen', 'Entregas', 'Programa', 'Movimiento de tierra', 'Tickets']
     at.sidebar.text_input[0].input('mala')
     at.sidebar.button[0].click().run()
     assert 'Cargar datos' not in [t.label for t in at.tabs]
@@ -284,7 +283,7 @@ def test_carga_inicial_loma_la_cruz_norte(motor):
     """Los archivos de data/carga_inicial (datos al 04/10/2026) cuadran con los totales del documento de obra."""
     d = RAIZ / 'data' / 'carga_inicial'
     pasos = [('avance', '1_sitios_volumen_avance_programa.csv'), ('gantt', '5_programa_gantt.csv'),
-             ('avance', '2_adicional_botadero.csv'), ('rellenos', '3_rellenos_densidades.csv'), ('hitos', '4_hitos.csv')]
+             ('avance', '2_adicional_botadero.csv'), ('hitos', '4_hitos.csv')]
     for tipo, archivo in pasos:
         rev = cargar(motor, tipo, (d / archivo).read_bytes(), archivo)
         assert rev.ok and not rev.errores, (archivo, rev.errores[:3])
@@ -295,9 +294,6 @@ def test_carga_inicial_loma_la_cruz_norte(motor):
     assert acts.loc['corte', 'retirado_m3'] == pytest.approx(28364.56, abs=0.05)
     assert acts.loc['adicional', 'volumen_proyectado_m3'] == 4488
     assert len(t['gantt']) == 47  # carta Gantt nueva: todos los sitios menos el 4
-    r = C.leer(motor, 'relleno')
-    assert r['corte_m3'].sum() == pytest.approx(3353.8)
-    assert r[['capas_acceso', 'capas_living', 'capas_calicata']].sum().sum() == 71
     assert len(C.leer(motor, 'hito')) == 3
 
 
@@ -364,3 +360,31 @@ def test_carga_al_19_10(motor):
     assert p.loc['S-40', 'real'] == 'en_proceso'         # 96,4 %
     z = t['zona'][t['zona']['estado'] == 'entregado']
     assert z.groupby('zona').size().to_dict() == {'acceso': 13, 'living': 13}
+
+
+def test_cumplimiento_por_entrega_de_acceso_y_living(motor):
+    """La carta Gantt solo se compara con las entregas: cumple el sitio con acceso y living entregados."""
+    cargar(motor, 'gantt', b'sitio;inicio;termino\n1;2026-09-01;2026-09-30\n2;2026-09-01;2026-09-30\n'
+                           b'3;2026-10-10;2026-11-30\n')
+    cargar(motor, 'avance', b'sitio;fecha;avance_pct;volumen_proyectado_m3\n1;2026-10-04;100;100\n2;2026-10-04;100;100\n'
+                            b'3;2026-10-04;40;100\n')
+    cargar(motor, 'avance', b'sitio;actividad;fecha;volumen_proyectado_m3;avance_pct\n3;adicional;2026-10-04;80;100\n')
+    cargar(motor, 'entregas', b'sitio;zona;estado;fecha_entrega\n1;acceso;entregado;2026-09-25\n1;living;entregado;2026-09-28\n'
+                              b'2;acceso;entregado;2026-10-01\n')
+    t = tablas(motor)
+    acts = C.volumenes(t['actividad'], t['viaje'], t['ajuste'], hasta='2026-10-20')
+    e = C.estado_sitios(t['terreno'], acts, t['zona'], t['gantt'], '2026-10-20').set_index('codigo')
+    assert e.loc['S-01', 'cumplimiento'] == 'entregado' and e.loc['S-01', 'a_tiempo']
+    # sitio 2: movimiento al 100 % pero falta el living -> no cumple
+    assert e.loc['S-02', 'intervencion'] == 'completo' and e.loc['S-02', 'cumplimiento'] == 'atrasado'
+    # sitio 3: el extra cuenta en el total (puede pasar del 100 %) pero no en el avance
+    assert e.loc['S-03', 'pct_plan'] == pytest.approx(0.4) and e.loc['S-03', 'pct_total'] == pytest.approx(1.2)
+    assert e.loc['S-03', 'tiene_extra'] and e.loc['S-03', 'gantt_estado'] == 'en_intervencion'
+    assert e.loc['S-03', 'cumplimiento'] == 'pendiente'
+    assert e.loc['S-04', 'cumplimiento'] is None   # sin programa
+
+
+def test_dia_anterior_con_movimiento():
+    v = pd.DataFrame({'fecha': ['2026-10-16', '2026-10-19']})
+    assert C.dia_anterior_con_movimiento(v, '2026-10-20') == '2026-10-19'
+    assert C.dia_anterior_con_movimiento(v, '2026-10-19') == '2026-10-16'   # fin de semana sin tickets

@@ -6,7 +6,7 @@ from sqlalchemy import (Column, Float, ForeignKey, Integer, MetaData, String, Ta
                         create_engine, event, func, insert, select)
 
 RAIZ = Path(__file__).resolve().parent.parent
-VERSION = '2026-10-20 e'  # se muestra en la app para saber qué versión está publicada
+VERSION = '2026-10-20 f'  # se muestra en la app para saber qué versión está publicada
 GEOMETRIA = RAIZ / 'data' / 'geometria.json'
 # escarpe y corte (excavación) de cada sitio; adicional = volumen extra a botadero
 TIPOS_ACTIVIDAD = ('escarpe', 'corte', 'adicional')
@@ -115,6 +115,15 @@ hito = Table(
     Column('nombre', String(120), nullable=False),
     Column('fecha', String(10), nullable=False),
     Column('carga_id', Integer, ForeignKey('carga.id')),
+)
+
+nota = Table(
+    'nota', meta,  # notas 📌 por sitio (bitácora: cada actualización es una fila nueva)
+    Column('id', Integer, primary_key=True),
+    Column('terreno_id', Integer, ForeignKey('terreno.id', ondelete='CASCADE'), nullable=False),
+    Column('responsable', String(80), nullable=False),
+    Column('texto', Text, nullable=False),
+    Column('creado_en', String(19), nullable=False),   # hora de Chile
 )
 
 historial = Table(

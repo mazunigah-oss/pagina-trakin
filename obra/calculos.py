@@ -288,3 +288,74 @@ def proyeccion(real: pd.DataFrame, programada: pd.DataFrame, hasta: str, ventana
         out['serie'] = pd.DataFrame({'fecha': fechas,
                                      'pct': [min(100.0, actual + ritmo * (f - hoy).days) for f in fechas]})
     return out
+
+
+# ---------------------------------------------------------------- estado por sitio (intervención y entregas)
+
+UMBRAL_COMPLETO = TOLERANCIA_TERMINADO   # Mapa de intervención: 100 % del volumen (con redondeo de planillas)
+UMBRAL_REAL_VERDE = 0.95                 # Programa, lo que realmente pasa: verde desde 95 %
+
+
+def estado_sitios(terrenos, acts, zonas, gantt, dia):
+    """Una fila por terreno con su movimiento de tierra, sus entregas y el cumplimiento de la carta Gantt.
+
+    - Movimiento: % = m³ retirados / m³ proyectados (no depende de la Gantt). El extra (proforma) se informa
+      aparte y puede llevar el total sobre 100 %.
+    - Entregas: el sitio está entregado cuando sus terrazas de acceso y living están entregadas
+      (el fondo de patio no cuenta). La Gantt solo se usa para saber cuándo debía entregarse:
+      un sitio cumple si está entregado; está atrasado si su programa terminó y no está entregado.
+    """
+    g = gantt[gantt['zona'].isna()] if not gantt.empty else gantt
+    rango = g.groupby('terreno_id').agg(inicio=('inicio', 'min'), termino=('termino', 'max')) if not g.empty \
+        else pd.DataFrame(columns=['inicio', 'termino'])
+    filas = []
+    for _, t in terrenos.iterrows():
+        a = acts[acts['terreno_id'] == t['id']]
+        plan, extra = planificadas(a), a[a['tipo'] == 'adicional']
+        proy = float(plan['volumen_proyectado_m3'].sum())
+        ret_plan, ret_extra = float(plan['retirado_m3'].sum()), float(extra['retirado_m3'].sum())
+        pct_plan = ret_plan / proy if proy > 0 else None
+        if (len(plan) and (plan['estado'] == 'terminado').all()) or (proy > 0 and ret_plan >= UMBRAL_COMPLETO * proy):
+            interv = 'completo'
+        elif ret_plan + ret_extra > 0 or (a['estado'] != 'sin_intervenir').any():
+            interv = 'en_intervencion'
+        else:
+            interv = 'sin_intervenir'
+        z = zonas[zonas['terreno_id'] == t['id']].set_index('zona')
+        claves = ['acceso', 'living'] if t['tipo'] == 'sitio' else ['unica']
+        est = {k: (z.loc[k, 'estado'] if k in z.index else None) for k in claves}
+        fechas = [z.loc[k, 'fecha_entrega'] for k in claves if k in z.index and pd.notna(z.loc[k, 'fecha_entrega'])]
+        entregado = all(v == 'entregado' for v in est.values())
+        ini = rango['inicio'].get(t['id']) if t['id'] in rango.index else None
+        fin = rango['termino'].get(t['id']) if t['id'] in rango.index else None
+        if fin is None:
+            gantt_estado = None
+        elif dia > fin:
+            gantt_estado = 'completo'
+        elif dia >= ini:
+            gantt_estado = 'en_intervencion'
+        else:
+            gantt_estado = 'pendiente'
+        debe = fin is not None and dia > fin
+        fecha_ent = max(fechas) if entregado and fechas else None
+        filas.append(dict(
+            terreno_id=t['id'], codigo=t['codigo'], tipo=t['tipo'], proyectado_m3=proy,
+            retirado_plan_m3=ret_plan, retirado_extra_m3=ret_extra, retirado_total_m3=ret_plan + ret_extra,
+            pct_plan=pct_plan, pct_total=(ret_plan + ret_extra) / proy if proy > 0 else None,
+            tiene_extra=ret_extra > 0, intervencion=interv,
+            acceso=est.get('acceso', est.get('unica')), living=est.get('living', est.get('unica')),
+            entregado=entregado, fecha_entrega=fecha_ent, inicio=ini, termino=fin, gantt_estado=gantt_estado,
+            debe_entregar=debe,
+            cumplimiento=None if fin is None else 'entregado' if entregado else 'atrasado' if debe else 'pendiente',
+            a_tiempo=bool(entregado and fin and fecha_ent and fecha_ent <= fin)))
+    return _sin_nan(pd.DataFrame(filas), ['inicio', 'termino', 'gantt_estado', 'cumplimiento', 'fecha_entrega',
+                                          'acceso', 'living'])
+
+
+def dia_anterior_con_movimiento(viajes: pd.DataFrame, dia: str):
+    """Día anterior a `dia`; si ese día no hubo tickets, el último día con tickets antes de `dia`."""
+    ayer = (date.fromisoformat(dia) - timedelta(days=1)).isoformat()
+    if viajes.empty or (viajes['fecha'] == ayer).any():
+        return ayer
+    previos = viajes.loc[viajes['fecha'] < dia, 'fecha']
+    return previos.max() if not previos.empty else ayer
