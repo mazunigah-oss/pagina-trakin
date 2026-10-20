@@ -421,3 +421,24 @@ def test_actividades_faltantes_se_crean_al_revisar(motor):
         con.execute(text("delete from actividad where tipo = 'adicional'"))
     rev = I.revisar(motor, 'avance', b'sitio;actividad;fecha;volumen_proyectado_m3;avance_pct\n30;adicional;2026-10-16;228;100\n')
     assert not rev.errores
+
+
+def test_carga_unica_movimiento_planilla_o_tabla(motor):
+    """'Movimiento de tierra por sitio' acepta la planilla de obra o una tabla simple, con la fecha elegida."""
+    xlsx = (RAIZ / 'data' / 'fuente' / 'Resumen_x_Terraza_16-10-2026.xlsx').read_bytes()
+    cargar(motor, 'movimiento', (RAIZ / 'data' / 'carga_2026-10-19' / '1_avance_al_16-10.csv').read_bytes())
+    rev = I.revisar(motor, 'movimiento', xlsx, 'Resumen_x_Terraza.xlsx', {'fecha': '2026-10-16'})
+    assert rev.ok and not rev.errores and rev.resumen['extra_m3'] == 4992
+    # tabla simple: solo volúmenes (sin avance) y luego avance en %, con la fecha elegida en pantalla
+    rev = I.revisar(motor, 'movimiento', b'Sitio;Volumen proyectado\n47;1700\n', 'v.csv', {'fecha': '2026-10-20'})
+    assert not rev.errores and rev.resumen['proyectados_actualizados'] >= 1
+    I.aplicar(motor, 'movimiento', rev, 'v.csv')
+    rev = I.revisar(motor, 'movimiento', b'sitio;avance_pct\n47;10\n', 'a.csv', {'fecha': '2026-10-20'})
+    I.aplicar(motor, 'movimiento', rev, 'a.csv')
+    t = tablas(motor)
+    acts = C.volumenes(t['actividad'], t['viaje'], t['ajuste'], hasta='2026-10-20')
+    s47 = C.planificadas(acts[acts['terreno_id'] == 47])
+    assert s47['volumen_proyectado_m3'].sum() == pytest.approx(1700)
+    assert s47['retirado_m3'].sum() == pytest.approx(170)
+    assert (t['ajuste']['fecha'] == '2026-10-20').any()
+    assert I.CARGAS_PRINCIPALES[0] == 'movimiento' and 'volumenes' not in I.CARGAS_PRINCIPALES + I.CARGAS_OTRAS

@@ -564,37 +564,40 @@ with tabs['Tickets']:
 
 if ADMIN:
     with tabs['Cargar datos']:
-        st.markdown('Suba archivos **CSV** (separados por `;` o `,`) o **Excel**. Pasos: elegir archivo → '
-                    '**Revisar archivo** → **Confirmar carga**. Nada se guarda hasta confirmar.')
+        st.markdown('Suba archivos **Excel** o **CSV**. Pasos: elegir archivo → **Revisar archivo** → '
+                    '**Confirmar carga**. Nada se guarda hasta confirmar.')
         if 'ultima_carga' in st.session_state:
             titulo, nombre, resumen = st.session_state.ultima_carga
             st.success(f'✅ Carga guardada: **{titulo}** ({nombre}) — '
                        + ' · '.join(f"{k.replace('_', ' ')}: {v}" for k, v in resumen.items()))
-        for tipo in I.TIPOS.values():
-            with st.expander(f'{tipo.titulo} · {tipo.modo}', expanded=tipo.id == 'planilla'):
+        def bloque_carga(tipo, abierto=False):
+            with st.expander(f'**{tipo.titulo}** · {tipo.modo}', expanded=abierto):
                 st.caption(tipo.ayuda)
-                st.dataframe(pd.DataFrame([dict(Columna=c.campo.upper() if tipo.id == 'viajes' else c.campo,
-                                                Obligatoria='sí' if c.requerido else '', Ejemplo=c.ejemplo,
-                                                Nota=c.descripcion) for c in tipo.columnas]),
-                             hide_index=True, use_container_width=True)
+                if getattr(tipo, 'formatos', None):
+                    st.markdown('\n'.join(f'- **{t}:** {d}' for t, d in tipo.formatos))
+                else:
+                    st.dataframe(pd.DataFrame([dict(Columna=c.campo.upper() if tipo.id == 'viajes' else c.campo,
+                                                    Obligatoria='sí' if c.requerido else '', Ejemplo=c.ejemplo,
+                                                    Nota=c.descripcion) for c in tipo.columnas]),
+                                 hide_index=True, use_container_width=True)
                 st.download_button('Descargar plantilla', I.plantilla(tipo.id), f'plantilla_{tipo.id}.csv',
                                    'text/csv', key=f'pl_{tipo.id}')
                 opciones = {}
-                if tipo.id == 'planilla':
-                    opciones['fecha'] = st.date_input('Fecha de los datos de la planilla', value=date.fromisoformat(dia),
-                                                      format='DD/MM/YYYY', key='fecha_planilla').isoformat()
+                if tipo.id == 'movimiento':
+                    opciones['fecha'] = st.date_input('Fecha de los datos', value=date.fromisoformat(dia),
+                                                      format='DD/MM/YYYY', key='fecha_movimiento').isoformat()
                 archivo = st.file_uploader('Archivo', type=['csv', 'txt', 'xlsx'], key=f'up_{tipo.id}')
                 clave_rev = f'rev_{tipo.id}'
                 if archivo is None:
                     st.session_state.pop(clave_rev, None)
-                    continue
+                    return
                 contenido = archivo.getvalue()
                 firma = (archivo.name, len(contenido), json.dumps(opciones))
                 if st.button('Revisar archivo', key=f'rv_{tipo.id}'):
                     st.session_state[clave_rev] = (*firma, I.revisar(MOTOR, tipo.id, contenido, archivo.name, opciones))
                 guardado = st.session_state.get(clave_rev)
                 if not guardado or guardado[:3] != firma:
-                    continue
+                    return
                 rev = guardado[3]
                 if not rev.ok:
                     if rev.faltan_columnas:
@@ -602,7 +605,7 @@ if ADMIN:
                                  f"Encontradas: {', '.join(rev.columnas_encontradas) or '(ninguna)'}")
                     for _, m in rev.errores:
                         st.error(m)
-                    continue
+                    return
                 st.markdown(f'**Revisión: {rev.filas} filas leídas** — :orange[aún no se guarda nada, '
                             f'presione **Confirmar carga** abajo]')
                 st.dataframe(pd.DataFrame([rev.resumen]).rename(columns=lambda c: c.replace('_', ' ')),
@@ -612,14 +615,20 @@ if ADMIN:
                     st.dataframe(pd.DataFrame(rev.errores, columns=['Fila', 'Problema']), hide_index=True,
                                  use_container_width=True, height=min(300, 38 + 35 * len(rev.errores)))
                 for fila, m in rev.avisos:
-                    st.info((f'Fila {fila}: ' if fila else '') + m)
+                    st.info((f'Fila {fila}: ' if fila and fila < 100000 else '') + m)
                 if rev.hay_cambios and st.button('Confirmar carga', type='primary', key=f'ok_{tipo.id}'):
                     I.aplicar(MOTOR, tipo.id, rev, archivo.name)
                     st.session_state.pop(clave_rev, None)
                     st.session_state.ultima_carga = (tipo.titulo, archivo.name, rev.resumen)
                     st.rerun()
                 elif not rev.hay_cambios:
-                    st.caption('No hay filas nuevas para guardar.')
+                    st.caption('No hay cambios para guardar: los datos ya estaban cargados.')
+
+        for i, t in enumerate(I.CARGAS_PRINCIPALES):
+            bloque_carga(I.TIPOS[t], abierto=i == 0)
+        st.markdown('###### Otras cargas (uso ocasional)')
+        for t in I.CARGAS_OTRAS:
+            bloque_carga(I.TIPOS[t])
 
         st.subheader('Historial de cargas')
         cargas = C.leer(MOTOR, 'carga').sort_values('id', ascending=False)

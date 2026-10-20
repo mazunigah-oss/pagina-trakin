@@ -516,7 +516,7 @@ class Avance(TipoArchivo):
             codigo = norm_terreno(valor(f, c['sitio']))
             if codigo in (None, VACIO) or codigo not in terrenos:
                 rev.errores.append((n, f'Sitio "{valor(f, c["sitio"])}" no existe')); continue
-            fecha = norm_fecha(valor(f, c['fecha'])) or hoy
+            fecha = norm_fecha(valor(f, c['fecha'])) or rev.opciones.get('fecha') or hoy
             if fecha is VACIO:
                 rev.errores.append((n, f'Fecha inválida: "{valor(f, c["fecha"])}"')); continue
             pct_txt = valor(f, c['avance_pct'])
@@ -791,6 +791,36 @@ def num_txt(x):
     return f'{x:,.0f}'.replace(',', '.')
 
 
+class Movimiento(TipoArchivo):
+    """Una sola carga para el volumen proyectado y el avance de cada sitio: acepta la planilla de obra
+    "Resumen x Terraza" tal cual, o una tabla simple (sitio, volumen proyectado, avance)."""
+    id = 'movimiento'
+    titulo = 'Movimiento de tierra por sitio (volumen proyectado y avance)'
+    modo = 'ACTUALIZA'
+    ayuda = ('Elija la fecha de los datos y suba uno de estos archivos: (1) la planilla de obra "Resumen x Terraza" '
+             'tal cual viene, o (2) una tabla simple con sitio, volumen proyectado y avance. Cada sitio queda con el '
+             'volumen y el avance informados a esa fecha (no se suma: si se informa 40 % y después 55 %, avanza 15 %).')
+    formatos = [
+        ('Planilla de obra "Resumen x Terraza"', 'Se sube sin modificar. Lee Sitio, Escarpe, Corte geométrico, '
+         'Esc + corte c/esp y a botadero. Las filas "EXC ADICIONAL" y las filas sin presupuesto con m³ a botadero se '
+         'cargan como extra. El camino no se considera. Los números de sitio mal escritos se reconocen por sus volúmenes.'),
+        ('Tabla simple (CSV o Excel)', 'Columnas: sitio · volumen_proyectado_m3 · avance_pct (o m3_acumulados). '
+         'Opcionales: actividad (escarpe, corte o adicional; vacío = total del sitio) y fecha (si cambia por fila). '
+         'Se puede dejar el avance vacío para cargar solo volúmenes.'),
+    ]
+    columnas = Avance.columnas
+    conocidas_extra = {'escarpe', 'corte_geometrico', 'esc_corte_c_esp', 'a_botadero'}
+
+    def validar(self, con, df, rev):
+        if {'corte_geometrico', 'a_botadero'} <= set(df.columns):
+            Planilla().validar(con, df, rev)
+        else:
+            Avance().validar(con, df, rev)
+
+    def aplicar(self, con, ops, carga_id):
+        Avance().aplicar(con, ops, carga_id)
+
+
 class Ajustes(TipoArchivo):
     id = 'ajustes'
     titulo = 'Ajustes manuales de volumen (topografía)'
@@ -827,8 +857,14 @@ class Ajustes(TipoArchivo):
         con.execute(insert(T.ajuste), [dict(o, carga_id=carga_id) for o in ops])
 
 
-TIPOS = {t.id: t for t in (Planilla(), Viajes(), Avance(), Gantt(), Volumenes(), Entregas(), Ajustes(), Hitos())}
+TIPOS = {t.id: t for t in (Movimiento(), Viajes(), Entregas(), Gantt(), Ajustes(), Hitos(),
+                            Planilla(), Avance(), Volumenes())}
+# lo que se muestra en "Cargar datos": las de uso frecuente arriba, el resto en "Otras cargas".
+# 'planilla', 'avance' y 'volumenes' quedan incluidas en 'movimiento' (se mantienen por compatibilidad).
+CARGAS_PRINCIPALES = ['movimiento', 'viajes', 'entregas', 'gantt']
+CARGAS_OTRAS = ['ajustes', 'hitos']
 DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste, 'planilla': T.ajuste,
+               'movimiento': T.ajuste,
                'hitos': T.hito}
 
 
@@ -837,7 +873,8 @@ def revisar(motor, tipo, contenido, nombre='', opciones=None):
     rev = Revision(opciones=dict(opciones or {}))
     T.sembrar(motor)  # asegura que existan todas las actividades (ej. 'adicional' en bases antiguas)
     try:
-        df = leer_tabla(contenido, nombre, {k for c in t.columnas for k in (c.campo, *c.alias)})
+        df = leer_tabla(contenido, nombre, {k for c in t.columnas for k in (c.campo, *c.alias)}
+                        | getattr(t, 'conocidas_extra', set()))
     except Exception as e:  # archivo corrupto o formato desconocido
         rev.ok = False
         rev.errores.append((None, f'No se pudo leer el archivo: {e}'))

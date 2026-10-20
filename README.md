@@ -51,29 +51,16 @@ Se cargan sobre lo anterior en el orden indicado en ese documento.
 
 ## Archivos que se cargan
 
-Plantillas en la pestaña "Cargar datos" y ejemplos en [`data/ejemplos/`](data/ejemplos). CSV (`;` o `,`) o Excel.
+En **Cargar datos** (Excel o CSV; se revisa antes de guardar y se puede deshacer desde el historial):
 
-| Archivo | Modo | Columnas |
+| Carga | Modo | Qué se sube |
 |---|---|---|
-| Planilla **Resumen x Terraza** (Excel de obra, tal cual) | **ACTUALIZA** | Se sube sin modificar indicando la fecha de los datos. Lee escarpe, corte, esponjado y m³ a botadero por sitio; las filas *EXC ADICIONAL* y las filas sin presupuesto con volumen se cargan como extra (proforma); el camino se ignora; los números de sitio mal escritos se reconocen por sus volúmenes |
-| Tickets de la máquina | **SUMA** | `TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO` — tal como sale de la máquina |
-| Avance acumulado por sitio | **ACTUALIZA** | `sitio;fecha;avance_pct` (o `m3_acumulados`; opcional `volumen_proyectado_m3`, `actividad`) — para cuando no hay tickets: deja el sitio en ese avance a esa fecha |
-| Programa (Gantt) | **REEMPLAZA** | `sitio;inicio;termino` (+ opcional `actividad`, `zona`, `tarea`) |
-| Volúmenes proyectados | **ACTUALIZA** | `sitio;actividad;volumen_proyectado_m3;estado` |
-| Entregas de terrazas | **ACTUALIZA** | `sitio;zona;estado;fecha_entrega` |
-| Hitos | **REEMPLAZA** | `hito;fecha` |
-| Ajustes (topografía) | **SUMA** | `sitio;actividad;fecha;volumen_m3;motivo` |
-
-Tickets:
-- Cada ticket se guarda una sola vez (clave = TICKET + ESTADO): se puede subir el CSV del día, uno acumulado o el
-  mismo dos veces sin duplicar.
-- `ANULACION` resta su volumen (y descuenta el viaje).
-- `SECTOR` = número de sitio. Vacío u otro valor → "General", que se reparte entre las actividades en proceso según su
-  volumen proyectado.
-- `TIPO`: `CORTE` o `DESCARPE` (escarpe).
-
-Un sitio se considera **terminado** si el administrador marca escarpe y corte como terminados, o si ya se retiró todo su
-volumen proyectado.
+| **Movimiento de tierra por sitio** | ACTUALIZA | Se elige la fecha de los datos y se sube **la planilla de obra "Resumen x Terraza" tal cual** (lee escarpe, corte, esponjado, m³ a botadero y los extra; ignora el camino; reconoce sitios mal numerados por sus volúmenes) **o** una tabla simple `sitio;volumen_proyectado_m3;avance_pct` (o `m3_acumulados`). Cada sitio queda en el valor informado a esa fecha |
+| **Tickets de camiones** | SUMA | CSV de la máquina: `TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO` |
+| **Estado de entregas de terrazas** | ACTUALIZA | `sitio;zona;estado;fecha_entrega` |
+| **Programa (carta Gantt)** | REEMPLAZA | `sitio;inicio;termino` (el Excel semanal se convierte con `scripts/gantt_excel_a_csv.py`) |
+| Ajustes de volumen *(otras cargas)* | SUMA | `sitio;actividad;fecha;volumen_m3;motivo` |
+| Hitos *(otras cargas)* | REEMPLAZA | `hito;fecha` |
 
 ## Publicar en Streamlit Community Cloud
 
