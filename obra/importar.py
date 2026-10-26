@@ -552,6 +552,18 @@ class Avance(TipoArchivo):
                                            f'{", ".join(map(str, filas_r))} (revise el número de sitio); se omite'))
             leidas = [x for x in leidas if (x[0], x[2], x[3]) not in repetidas]
 
+        borrar = []
+        if rev.opciones.get('_reemplaza'):
+            # el archivo reemplaza lo anterior en lo que trae: si trae volúmenes, todos los proyectados parten en 0;
+            # si trae avance, se borran los avances de cargas de movimiento previas (tickets y ajustes manuales quedan)
+            if any(x[6] is not None for x in leidas):
+                acts['volumen_proyectado_m3'] = 0.0
+            if any(x[4] is not None or x[5] is not None for x in leidas):
+                previas = [r.id for r in con.execute(select(T.carga.c.id).where(T.carga.c.tipo.in_(CARGAS_MOVIMIENTO)))]
+                viejos = ajustes['carga_id'].isin(previas)
+                borrar = [int(x) for x in ajustes.loc[viejos, 'id']]
+                ajustes = ajustes[~viejos]
+
         # volúmenes proyectados informados en el mismo archivo (se aplican antes de calcular el %)
         for fecha, n, tid, tipo, pct, m3, proy in leidas:
             if proy is None:
@@ -599,6 +611,8 @@ class Avance(TipoArchivo):
         for aid, v in cambios_proy.items():
             if abs(v - originales[aid]) > 1e-9:
                 rev.ops.insert(0, dict(tipo='proyectado', id=aid, volumen=v))
+        if borrar:
+            rev.ops.insert(0, dict(tipo='borrar_ajustes', ids=borrar))
         if extra_auto:
             rev.avisos.append((None, 'Filas sin volumen proyectado y con m³ movidos, cargadas como extra: sitios '
                                      + ', '.join(c[2:].lstrip('0') for c in extra_auto)))
@@ -608,8 +622,16 @@ class Avance(TipoArchivo):
                            ajustes_de_volumen=sum(o['tipo'] == 'ajuste' for o in rev.ops),
                            m3_ajustados=float(round(sum(o['volumen_m3'] for o in rev.ops if o['tipo'] == 'ajuste'), 1)),
                            proyectados_actualizados=sum(o['tipo'] == 'proyectado' for o in rev.ops))
+        if rev.opciones.get('_reemplaza'):
+            rev.resumen['avances_anteriores_reemplazados'] = len(borrar)
+            if rev.errores:
+                rev.avisos.append((None, 'Esta carga reemplaza a la anterior: los sitios de las filas con problemas '
+                                         'quedarán sin volumen ni avance hasta que se corrijan y se vuelva a subir'))
 
     def aplicar(self, con, ops, carga_id):
+        for o in ops:
+            if o['tipo'] == 'borrar_ajustes':
+                con.execute(delete(T.ajuste).where(T.ajuste.c.id.in_(o['ids'])))
         for o in ops:
             if o['tipo'] == 'proyectado':
                 con.execute(update(T.actividad).where(T.actividad.c.id == o['id']).values(volumen_proyectado_m3=o['volumen']))
@@ -751,7 +773,9 @@ class Planilla(TipoArchivo):
         def candidatos(r):
             out = set()
             for s, (de, dc) in db.items():
-                ok_c = any(abs(dc - r['cor'] * f) < 0.06 for f in (r['f'], 1.4, 1.43))
+                # el corte, o el total del sitio si se cargó sin separar escarpe (tabla simple)
+                ok_c = any(abs(dc - r['cor'] * f) < 0.06 or (not de and abs(dc - (r['esc'] + r['cor']) * f) < 0.06)
+                           for f in (r['f'], 1.4, 1.43))
                 ok_e = abs(de - r['esc'] * r['f']) < 0.06 if con_escarpe else True
                 if ok_c and ok_e:
                     out.add(s)
@@ -820,10 +844,12 @@ class Movimiento(TipoArchivo):
     "Resumen x Terraza" tal cual, o una tabla simple (sitio, volumen proyectado, avance)."""
     id = 'movimiento'
     titulo = 'Movimiento de tierra por sitio (volumen proyectado y avance)'
-    modo = 'ACTUALIZA'
+    modo = 'REEMPLAZA'
     ayuda = ('Elija la fecha de los datos y suba uno de estos archivos: (1) la planilla de obra "Resumen x Terraza" '
-             'tal cual viene, o (2) una tabla simple con sitio, volumen proyectado y avance. Cada sitio queda con el '
-             'volumen y el avance informados a esa fecha (no se suma: si se informa 40 % y después 55 %, avanza 15 %).')
+             'tal cual viene, o (2) una tabla simple con sitio, volumen proyectado y avance. Cada carga REEMPLAZA a la '
+             'anterior: se borran los volúmenes proyectados y avances cargados antes y quedan solo los del archivo '
+             '(si el archivo trae solo volúmenes o solo avance, se reemplaza solo eso; los tickets de camiones y los '
+             'ajustes manuales se mantienen).')
     formatos = [
         ('Planilla de obra "Resumen x Terraza"', 'Se sube sin modificar. Lee Sitio, Escarpe, Corte geométrico, '
          'Esc + corte c/esp y a botadero. Las filas "EXC ADICIONAL" y las filas sin presupuesto con m³ a botadero se '
@@ -836,6 +862,7 @@ class Movimiento(TipoArchivo):
     conocidas_extra = {'escarpe', 'corte_geometrico', 'esc_corte_c_esp', 'a_botadero'}
 
     def validar(self, con, df, rev):
+        rev.opciones['_reemplaza'] = True
         if {'corte_geometrico', 'a_botadero'} <= set(df.columns):
             Planilla().validar(con, df, rev)
         else:
@@ -887,6 +914,7 @@ TIPOS = {t.id: t for t in (Movimiento(), Viajes(), Entregas(), Gantt(), Ajustes(
 # 'planilla', 'avance' y 'volumenes' quedan incluidas en 'movimiento' (se mantienen por compatibilidad).
 CARGAS_PRINCIPALES = ['movimiento', 'viajes', 'entregas', 'gantt']
 CARGAS_OTRAS = ['ajustes', 'hitos']
+CARGAS_MOVIMIENTO = ('avance', 'planilla', 'movimiento', 'volumenes')
 DESHACIBLES = {'viajes': T.viaje, 'ajustes': T.ajuste, 'gantt': T.gantt, 'avance': T.ajuste, 'planilla': T.ajuste,
                'movimiento': T.ajuste,
                'hitos': T.hito}

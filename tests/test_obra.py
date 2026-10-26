@@ -472,3 +472,31 @@ def test_csv_del_usuario_corregido(motor):
     assert g.loc['corte', 'volumen_proyectado_m3'] == pytest.approx(45248.84, abs=0.05)
     assert g.loc['corte', 'retirado_m3'] == pytest.approx(31972, abs=0.5)
     assert g.loc['adicional', 'retirado_m3'] == pytest.approx(4992)
+
+
+def test_movimiento_reemplaza_la_carga_anterior(motor):
+    planilla = (RAIZ / 'data' / 'fuente' / 'Resumen_x_Terraza_16-10-2026.xlsx').read_bytes()
+    simple = (RAIZ / 'data' / 'carga_2026-10-19' / 'movimiento_al_16-10_corregido.csv').read_bytes()
+    otros = I.revisar(motor, 'ajustes', b'sitio;actividad;fecha;volumen_m3;motivo\n15;corte;01/10/2026;10;topografia\n',
+                      'a.csv')
+    I.aplicar(motor, 'ajustes', otros, 'a.csv')  # los ajustes manuales no se borran
+
+    def totales():
+        t = tablas(motor)
+        g = C.volumenes(t['actividad'], t['viaje'], t['ajuste']).groupby('tipo')[['volumen_proyectado_m3',
+                                                                                   'retirado_m3']].sum()
+        return (round(g.loc[['escarpe', 'corte'], 'volumen_proyectado_m3'].sum(), 1),
+                round(g.loc[['escarpe', 'corte'], 'retirado_m3'].sum(), 1), round(g.loc['adicional', 'retirado_m3'], 1))
+    resultados = []
+    for contenido, nombre in [(planilla, 'R.xlsx'), (simple, 's.csv'), (planilla, 'R.xlsx'), (planilla, 'R.xlsx'),
+                              (simple, 's.csv')]:
+        rev = I.revisar(motor, 'movimiento', contenido, nombre, {'fecha': '2026-10-16'})
+        I.aplicar(motor, 'movimiento', rev, nombre)
+        resultados.append(totales())
+    # cada carga deja solo lo del archivo: no se suma con la anterior
+    for proy, ret, extra in resultados[1:]:
+        assert proy == pytest.approx(45248.8, abs=0.2)
+        assert ret == pytest.approx(31972, abs=1)  # el archivo fija el acumulado (incluye el ajuste manual)
+        assert extra == pytest.approx(4992)
+    assert resultados[2] == resultados[3]
+    assert (tablas(motor)['ajuste']['motivo'] == 'topografia').sum() == 1

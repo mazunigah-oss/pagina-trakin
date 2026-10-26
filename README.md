@@ -55,7 +55,7 @@ En **Cargar datos** (Excel o CSV; se revisa antes de guardar y se puede deshacer
 
 | Carga | Modo | Qué se sube |
 |---|---|---|
-| **Movimiento de tierra por sitio** | ACTUALIZA | Se elige la fecha de los datos y se sube **la planilla de obra "Resumen x Terraza" tal cual** (lee escarpe, corte, esponjado, m³ a botadero y los extra; ignora el camino; reconoce sitios mal numerados por sus volúmenes) **o** una tabla simple `sitio;volumen_proyectado_m3;avance_pct` (o `m3_acumulados`). Cada sitio queda en el valor informado a esa fecha |
+| **Movimiento de tierra por sitio** | REEMPLAZA | Se elige la fecha de los datos y se sube **la planilla de obra "Resumen x Terraza" tal cual** (lee escarpe, corte, esponjado, m³ a botadero y los extra; ignora el camino; reconoce sitios mal numerados por sus volúmenes) **o** una tabla simple `sitio;volumen_proyectado_m3;avance_pct` (o `m3_acumulados`). Cada carga **reemplaza** los volúmenes y avances de las cargas de movimiento anteriores (no se suman); si el archivo trae solo volúmenes o solo avance, se reemplaza solo eso. Los tickets y los ajustes manuales se mantienen |
 | **Tickets de camiones** | SUMA | CSV de la máquina: `TICKET;FECHA;HORA;PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO` |
 | **Estado de entregas de terrazas** | ACTUALIZA | `sitio;zona;estado;fecha_entrega` |
 | **Programa (carta Gantt)** | REEMPLAZA | `sitio;inicio;termino` (el Excel semanal se convierte con `scripts/gantt_excel_a_csv.py`) |
