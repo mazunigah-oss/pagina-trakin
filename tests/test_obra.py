@@ -500,3 +500,13 @@ def test_movimiento_reemplaza_la_carga_anterior(motor):
         assert extra == pytest.approx(4992)
     assert resultados[2] == resultados[3]
     assert (tablas(motor)['ajuste']['motivo'] == 'topografia').sum() == 1
+
+
+def test_origen_y_limpiar_movimiento(motor):
+    cargar(motor, 'movimiento', (RAIZ / 'data' / 'carga_2026-10-19' / 'movimiento_al_16-10_corregido.csv').read_bytes())
+    cargar(motor, 'viajes', (RAIZ / 'data' / 'carga_2026-10-19' / '2_tickets_19-10.csv').read_bytes())
+    o = I.origen_retirado(motor)
+    assert set(o['Origen']) == {'Tickets de camiones', 'Avance / ajuste'} and o['m3'].sum() > 36000
+    I.limpiar_movimiento(motor)
+    t = tablas(motor)
+    assert t['ajuste'].empty and t['actividad']['volumen_proyectado_m3'].sum() == 0 and not t['viaje'].empty

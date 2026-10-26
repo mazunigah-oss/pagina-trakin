@@ -967,6 +967,33 @@ def aplicar(motor, tipo, rev: Revision, nombre=''):
     return carga_id
 
 
+def origen_retirado(motor, hasta=None):
+    """De dónde vienen los m³ retirados: tickets y ajustes, agrupados por la carga que los subió."""
+    with motor.connect() as con:
+        cargas = pd.read_sql(select(T.carga), con).set_index('id')
+        viajes = pd.read_sql(select(T.viaje.c.fecha, T.viaje.c.volumen_m3, T.viaje.c.carga_id), con)
+        ajustes = pd.read_sql(select(T.ajuste.c.fecha, T.ajuste.c.volumen_m3, T.ajuste.c.carga_id), con)
+    filas = []
+    for origen, df in (('Tickets de camiones', viajes), ('Avance / ajuste', ajustes)):
+        if hasta:
+            df = df[df['fecha'] <= hasta]
+        for cid, g in df.groupby(df['carga_id'].fillna(-1)):
+            c = cargas.loc[int(cid)] if int(cid) in cargas.index else None
+            filas.append({'Origen': origen, 'Carga': c['tipo'] if c is not None else '(sin carga)',
+                          'Archivo': c['archivo'] if c is not None else '', 'Subido': c['creado_en'] if c is not None else '',
+                          'Fechas': f"{g['fecha'].min()} a {g['fecha'].max()}", 'Registros': len(g),
+                          'm3': float(round(g['volumen_m3'].sum(), 1))})
+    return pd.DataFrame(filas, columns=['Origen', 'Carga', 'Archivo', 'Subido', 'Fechas', 'Registros', 'm3'])
+
+
+def limpiar_movimiento(motor):
+    """Deja el movimiento de tierra en cero: borra volúmenes proyectados y avances/ajustes (no toca tickets)."""
+    with motor.begin() as con:
+        con.execute(delete(T.ajuste))
+        con.execute(update(T.actividad).values(volumen_proyectado_m3=0))
+        con.execute(delete(T.carga).where(T.carga.c.tipo.in_(CARGAS_MOVIMIENTO + ('ajustes',))))
+
+
 def deshacer(motor, carga_id):
     with motor.begin() as con:
         c = con.execute(select(T.carga).where(T.carga.c.id == carga_id)).first()

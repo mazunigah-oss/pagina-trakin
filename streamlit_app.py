@@ -630,6 +630,22 @@ if ADMIN:
         for t in I.CARGAS_OTRAS:
             bloque_carga(I.TIPOS[t])
 
+        st.subheader('¿De dónde vienen los m³ retirados?')
+        origen = I.origen_retirado(MOTOR, dia)
+        if origen.empty:
+            st.caption('No hay m³ retirados cargados.')
+        else:
+            st.caption(f"Total al {fecha_cl(dia)}: **{num(origen['m3'].sum())} m³**. Los tickets se suman al avance "
+                       'informado solo si son posteriores a la fecha de la planilla.')
+            st.dataframe(origen, hide_index=True, use_container_width=True,
+                         column_config={'m3': st.column_config.NumberColumn('m³', format='%.0f')})
+        with st.popover('🧹 Borrar todo el movimiento de tierra cargado'):
+            st.markdown('Deja **en cero** los volúmenes proyectados y los avances (planillas y ajustes). '
+                        'No borra tickets, entregas, carta Gantt ni notas. Después suba de nuevo la planilla.')
+            if st.button('Sí, borrar el movimiento de tierra', type='primary', key='limpiar_mov'):
+                I.limpiar_movimiento(MOTOR)
+                st.rerun()
+
         st.subheader('Historial de cargas')
         cargas = C.leer(MOTOR, 'carga').sort_values('id', ascending=False)
         if cargas.empty:
