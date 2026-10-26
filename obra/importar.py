@@ -796,6 +796,13 @@ class Planilla(TipoArchivo):
                     if len(libres) == 1:
                         asignado[r['fila']] = next(iter(libres))
                         usados.add(asignado[r['fila']])
+        # los que no calzan con ningún volumen cargado (ej. base con volúmenes erróneos): se usa el número de la
+        # planilla si no está repetido ni ocupado por otra fila
+        usados = set(asignado.values())
+        for r in normales:
+            if r['fila'] not in asignado and r['etiqueta'] not in repetidas and r['etiqueta'] not in usados:
+                asignado[r['fila']] = r['etiqueta']
+                usados.add(r['etiqueta'])
         filas_av = []
         cambiados = []
         for r in normales:
