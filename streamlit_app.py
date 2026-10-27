@@ -3,6 +3,7 @@
 Visita: acceso libre, solo lectura. Administrador: contraseña (secreto ADMIN_PASSWORD).
 """
 import hmac
+import io
 import json
 import os
 from datetime import date
@@ -645,6 +646,23 @@ if ADMIN:
             if st.button('Sí, borrar el movimiento de tierra', type='primary', key='limpiar_mov'):
                 I.limpiar_movimiento(MOTOR)
                 st.rerun()
+        with st.expander('🔎 Diagnóstico de la base (para soporte)'):
+            act_b = C.leer(MOTOR, 'actividad').merge(terrenos[['id', 'tipo', 'codigo']].rename(
+                columns={'id': 'terreno_id', 'tipo': 'tipo_terreno'}), on='terreno_id', how='left')
+            st.caption(f"Versión {T.VERSION} · base {MOTOR.dialect.name} · terrenos {len(terrenos)} · "
+                       f"actividades {len(act_b)} · repetidas {int(act_b.duplicated(['terreno_id', 'tipo']).sum())} · "
+                       f"terrazas {len(zonas)} · ajustes {len(ajustes)} · tickets {len(viajes)}")
+            st.dataframe(act_b.groupby(['tipo_terreno', 'tipo'], dropna=False).agg(
+                filas=('id', 'size'), proyectado_m3=('volumen_proyectado_m3', 'sum')).reset_index(),
+                hide_index=True, use_container_width=True)
+            st.caption(f"Resumen: {num(ES.loc[ES['tipo'] == 'sitio', 'proyectado_m3'].sum())} m³ proyectados · "
+                       f"Movimiento de tierra: {num(C.planificadas(acts)['volumen_proyectado_m3'].sum())} m³")
+            respaldo = io.BytesIO()
+            with pd.ExcelWriter(respaldo, engine='openpyxl') as xl:
+                for n in ('terreno', 'zona', 'actividad', 'ajuste', 'viaje', 'carga', 'gantt', 'hito', 'nota'):
+                    C.leer(MOTOR, n).to_excel(xl, sheet_name=n, index=False)
+            st.download_button('Descargar respaldo de la base (Excel)', respaldo.getvalue(),
+                               f'respaldo_obra_{dia}.xlsx', key='respaldo')
         with st.popover('⚠️ Borrar TODA la información y partir de cero'):
             st.markdown('Borra **todo**: volúmenes, avances, tickets, entregas, carta Gantt, hitos, notas e historial. '
                         'Quedan solo los sitios y terrazas del plano. Después hay que subir de nuevo los archivos.')
