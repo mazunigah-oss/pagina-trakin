@@ -645,6 +645,14 @@ if ADMIN:
             if st.button('Sí, borrar el movimiento de tierra', type='primary', key='limpiar_mov'):
                 I.limpiar_movimiento(MOTOR)
                 st.rerun()
+        with st.popover('⚠️ Borrar TODA la información y partir de cero'):
+            st.markdown('Borra **todo**: volúmenes, avances, tickets, entregas, carta Gantt, hitos, notas e historial. '
+                        'Quedan solo los sitios y terrazas del plano. Después hay que subir de nuevo los archivos.')
+            confirma = st.text_input('Escriba BORRAR para confirmar', key='conf_reinicio')
+            if st.button('Borrar todo', type='primary', key='reiniciar', disabled=confirma.strip().upper() != 'BORRAR'):
+                T.reiniciar(MOTOR)
+                st.session_state.pop('ultima_carga', None)
+                st.rerun()
 
         st.subheader('Historial de cargas')
         cargas = C.leer(MOTOR, 'carga').sort_values('id', ascending=False)

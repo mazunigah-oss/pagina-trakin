@@ -528,3 +528,34 @@ def test_movimiento_limpia_proyectados_inflados(motor):
     p = C.planificadas(C.volumenes(t['actividad'], t['viaje'], t['ajuste']))
     assert p['volumen_proyectado_m3'].sum() == pytest.approx(45248.84, abs=0.05)
     assert p['retirado_m3'].sum() == pytest.approx(31972, abs=0.5)
+
+
+def test_actividades_duplicadas_se_unen(tmp_path):
+    """Base antigua sin restricción única con 'corte' repetido: el proyectado salía al doble."""
+    from sqlalchemy import create_engine, text
+    url = f'sqlite:///{tmp_path}/d.db'
+    with create_engine(url).begin() as con:
+        con.execute(text('create table actividad (id integer primary key, terreno_id integer not null, '
+                         'tipo varchar(10) not null, volumen_proyectado_m3 float not null default 0, '
+                         "estado varchar(16) not null default 'sin_intervenir')"))
+    m = T.crear_motor(url)
+    with m.begin() as con:
+        con.execute(text("insert into actividad (terreno_id, tipo, volumen_proyectado_m3, estado) "
+                         "select terreno_id, tipo, volumen_proyectado_m3, estado from actividad"))
+    assert len(C.leer(m, 'actividad')) == 2 * 50 * 3
+    simple = (RAIZ / 'data' / 'carga_2026-10-19' / 'movimiento_al_16-10_corregido.csv').read_bytes()
+    I.aplicar(m, 'movimiento', I.revisar(m, 'movimiento', simple, 's.csv', {'fecha': '2026-10-16'}), 's.csv')
+    t = tablas(m)
+    p = C.planificadas(C.volumenes(t['actividad'], t['viaje'], t['ajuste']))
+    assert len(t['actividad']) == 50 * 3
+    assert p['volumen_proyectado_m3'].sum() == pytest.approx(45248.84, abs=0.05)
+    assert p['retirado_m3'].sum() == pytest.approx(31972, abs=0.5)
+
+
+def test_reiniciar_borra_todo(motor):
+    cargar(motor, 'movimiento', (RAIZ / 'data' / 'carga_2026-10-19' / 'movimiento_al_16-10_corregido.csv').read_bytes())
+    cargar(motor, 'viajes', (RAIZ / 'data' / 'carga_2026-10-19' / '2_tickets_19-10.csv').read_bytes())
+    T.reiniciar(motor)
+    t = tablas(motor)
+    assert t['ajuste'].empty and t['viaje'].empty and C.leer(motor, 'carga').empty
+    assert t['actividad']['volumen_proyectado_m3'].sum() == 0 and len(t['terreno']) == 50

@@ -3,10 +3,10 @@ import json
 from pathlib import Path
 
 from sqlalchemy import (Column, Float, ForeignKey, Integer, MetaData, String, Table, Text, UniqueConstraint,
-                        create_engine, event, func, insert, select)
+                        create_engine, delete, event, func, insert, select, update)
 
 RAIZ = Path(__file__).resolve().parent.parent
-VERSION = '2026-10-26 l'  # se muestra en la app para saber qué versión está publicada
+VERSION = '2026-10-27 m'  # se muestra en la app para saber qué versión está publicada
 GEOMETRIA = RAIZ / 'data' / 'geometria.json'
 # escarpe y corte (excavación) de cada sitio; adicional = volumen extra a botadero
 TIPOS_ACTIVIDAD = ('escarpe', 'corte', 'adicional')
@@ -184,6 +184,7 @@ def sembrar(motor):
     """Carga inicial de sitios, terrazas y actividades desde data/geometria.json."""
     with motor.begin() as con:
         if con.execute(select(func.count()).select_from(terreno)).scalar():
+            _quitar_duplicados(con)
             # bases ya creadas: agregar los tipos de actividad nuevos que falten
             existentes = {(r.terreno_id, r.tipo) for r in con.execute(select(actividad.c.terreno_id, actividad.c.tipo))}
             faltan = [dict(terreno_id=tid, tipo=x, volumen_proyectado_m3=0, estado='sin_intervenir')
@@ -204,6 +205,31 @@ def sembrar(motor):
                                                  estado='sin_intervenir') for x in TIPOS_ACTIVIDAD])
         con.execute(insert(zona), [dict(terreno_id=ids[z['terreno']], zona=z['zona'], poligono=json.dumps(z['puntos']),
                                         area_m2=z['area_m2'], estado='sin_intervenir') for z in geo['zonas']])
+
+
+def _quitar_duplicados(con):
+    """Bases creadas sin la restricción única pueden tener la misma actividad o terraza repetida en un sitio
+    (duplica el volumen proyectado). Se deja la primera y se le pasan los ajustes de las repetidas."""
+    vistos = {}
+    for r in con.execute(select(actividad.c.id, actividad.c.terreno_id, actividad.c.tipo).order_by(actividad.c.id)):
+        clave = (r.terreno_id, r.tipo)
+        if clave in vistos:
+            con.execute(update(ajuste).where(ajuste.c.actividad_id == r.id).values(actividad_id=vistos[clave]))
+            con.execute(delete(actividad).where(actividad.c.id == r.id))
+        else:
+            vistos[clave] = r.id
+    vistos = set()
+    for r in con.execute(select(zona.c.id, zona.c.terreno_id, zona.c.zona).order_by(zona.c.id)):
+        if (r.terreno_id, r.zona) in vistos:
+            con.execute(delete(zona).where(zona.c.id == r.id))
+        vistos.add((r.terreno_id, r.zona))
+
+
+def reiniciar(motor):
+    """Borra TODA la información (cargas, tickets, avances, entregas, Gantt, notas) y vuelve a crear los sitios."""
+    meta.drop_all(motor)
+    meta.create_all(motor)
+    sembrar(motor)
 
 
 def cargar_geometria():
