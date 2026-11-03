@@ -25,8 +25,14 @@ def ahora_chile():
 
 
 def leer(motor, tabla):
+    # una sola consulta con la definición conocida (read_sql_table consultaba antes la estructura de la base:
+    # ~23 consultas por tabla, lento con una base remota)
+    from sqlalchemy import select
+    from .db import meta
+    t = meta.tables[tabla]
     with motor.connect() as con:
-        return pd.read_sql_table(tabla, con)
+        df = pd.read_sql(select(t), con)
+    return df if not df.empty else pd.DataFrame(columns=[c.name for c in t.columns])
 
 
 def _repartir(volumen, candidatas: pd.DataFrame, acumulado: dict):
