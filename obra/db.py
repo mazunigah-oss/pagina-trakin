@@ -6,7 +6,7 @@ from sqlalchemy import (Column, Float, ForeignKey, Integer, MetaData, String, Ta
                         create_engine, delete, event, func, insert, select, update)
 
 RAIZ = Path(__file__).resolve().parent.parent
-VERSION = '2026-11-03 q'  # se muestra en la app para saber qué versión está publicada
+VERSION = '2026-11-03 r'  # se muestra en la app para saber qué versión está publicada
 GEOMETRIA = RAIZ / 'data' / 'geometria.json'
 # escarpe y corte (excavación) de cada sitio; adicional = volumen extra a botadero
 TIPOS_ACTIVIDAD = ('escarpe', 'corte', 'adicional')

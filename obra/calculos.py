@@ -27,12 +27,17 @@ def ahora_chile():
 def leer(motor, tabla):
     # una sola consulta con la definición conocida (read_sql_table consultaba antes la estructura de la base:
     # ~23 consultas por tabla, lento con una base remota)
-    from sqlalchemy import select
+    from sqlalchemy import Float, Integer, select
     from .db import meta
     t = meta.tables[tabla]
     with motor.connect() as con:
         df = pd.read_sql(select(t), con)
-    return df if not df.empty else pd.DataFrame(columns=[c.name for c in t.columns])
+    for c in t.columns:  # tipos numéricos también en tablas vacías o columnas sin datos
+        if isinstance(c.type, Float) or (isinstance(c.type, Integer) and df[c.name].isna().any()):
+            df[c.name] = df[c.name].astype('float64')
+        elif isinstance(c.type, Integer) and df.empty:
+            df[c.name] = df[c.name].astype('int64')
+    return df
 
 
 def _repartir(volumen, candidatas: pd.DataFrame, acumulado: dict):
