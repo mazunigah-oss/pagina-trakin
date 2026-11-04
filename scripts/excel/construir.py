@@ -9,7 +9,7 @@ macros recolorean los mapas, responden al clic en un sitio, importan tickets, la
 import csv
 import json
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -22,7 +22,8 @@ from openpyxl.utils import get_column_letter as L
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.hyperlink import Hyperlink
-from openpyxl.worksheet.table import Table, TableFormula, TableStyleInfo
+from openpyxl.worksheet.filters import AutoFilter
+from openpyxl.worksheet.table import Table, TableColumn, TableFormula, TableStyleInfo
 
 sys.path.insert(0, str(Path(__file__).parent))
 import dibujo  # noqa: E402
@@ -32,7 +33,7 @@ import xlsm  # noqa: E402
 RAIZ = Path(__file__).resolve().parents[2]
 SALIDA = Path(sys.argv[1]) if len(sys.argv) > 1 else RAIZ / 'data' / 'excel' / 'Seguimiento_Loma_La_Cruz.xlsm'
 GEO = json.loads((RAIZ / 'data' / 'geometria.json').read_text())
-HOY = (datetime.utcnow() - timedelta(hours=3)).date()     # Chile
+HOY = (datetime.now(timezone.utc) - timedelta(hours=3)).date()     # Chile
 
 VERDE, AMARILLO, GRIS, CLARO, ROJO = '2F9E6B', 'FBE08C', 'CFD6D1', 'F1F3F0', 'E06666'
 TINTA, SUAVE, FONDO, BORDE, OSCURO, AZUL, OCRE = '1D2320', '5F6B64', 'F4F6F3', 'D9DED9', '2F5D4A', '3B7DD8', 'B07A1F'
@@ -183,12 +184,17 @@ def tabla(ws, nombre_t, cab, filas, anchos, calc=None, formatos=None, sub='', fi
             c = ws.cell(i, j, v)
             if t in formatos:
                 c.number_format = formatos[t]
-    t = Table(displayName=nombre_t, ref=f'A{fila0}:{L(len(cab))}{fila0 + len(filas)}')
+    ref = f'A{fila0}:{L(len(cab))}{fila0 + len(filas)}'
+    t = Table(displayName=nombre_t, ref=ref, autoFilter=AutoFilter(ref=ref))
     t.tableStyleInfo = TableStyleInfo(name='TableStyleMedium7', showRowStripes=True)
-    t._initialise_columns()
-    for col in t.tableColumns:
-        if col.name in calc:
-            col.calculatedColumnFormula = TableFormula(attr_text=calc[col.name])
+    # Los nombres de columna deben ser idénticos a las celdas de encabezado: si no, Excel "repara" la tabla y
+    # borra las fórmulas que la nombran (tblX[Columna]). No usar t._initialise_columns(): deja "Column1", "Column2"…
+    assert len(set(c.lower() for c in cab)) == len(cab) and not any('\n' in c for c in cab), cab
+    for j, nom in enumerate(cab, 1):
+        col = TableColumn(id=j, name=nom)
+        if nom in calc:
+            col.calculatedColumnFormula = TableFormula(attr_text=calc[nom])
+        t.tableColumns.append(col)
     ws.add_table(t)
     ws.freeze_panes = ws.cell(fila0 + 1, 1)
     if sub:

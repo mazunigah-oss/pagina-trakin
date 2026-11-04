@@ -96,6 +96,7 @@ Public Sub ColorearMapas()
     verde = RGB(47, 158, 107): amarillo = RGB(251, 224, 140): gris = RGB(207, 214, 209)
     claro = RGB(241, 243, 240): rojo = RGB(224, 102, 102)
     On Error Resume Next
+    Application.ScreenUpdating = False   ' en Mac redibujar ~200 figuras una por una es lento
     Application.Calculate
     sel = CStr(Ficha.Range("C3").Value)
     For Each sh In Panel.Shapes
@@ -111,7 +112,7 @@ Public Sub ColorearMapas()
                         Case 2: sh.Fill.ForeColor.RGB = amarillo
                         Case Else: sh.Fill.ForeColor.RGB = gris
                     End Select
-                    sh.TextFrame.Characters.Text = CStr(Sitios.Cells(fila, 22).Value)
+                    PonerTexto sh, CStr(Sitios.Cells(fila, 22).Value)
                 Else
                     If UBound(p) >= 2 Then
                         If p(2) = "fondo" Then
@@ -128,7 +129,7 @@ Public Sub ColorearMapas()
                                 sh.Fill.ForeColor.RGB = gris
                             End If
                             If p(2) = "living" Or p(2) = "unica" Then
-                                sh.TextFrame.Characters.Text = CStr(Sitios.Cells(fila, 23).Value)
+                                PonerTexto sh, CStr(Sitios.Cells(fila, 23).Value)
                             End If
                         End If
                     End If
@@ -142,6 +143,12 @@ Public Sub ColorearMapas()
             End If
         End If
     Next sh
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub PonerTexto(ByVal sh As Shape, ByVal texto As String)
+    ' cambia el texto de la figura solo si es distinto (en Mac cada cambio de texto redibuja la figura)
+    If sh.TextFrame.Characters.Text <> texto Then sh.TextFrame.Characters.Text = texto
 End Sub
 
 Public Sub ClicMapa()

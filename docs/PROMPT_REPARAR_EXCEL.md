@@ -1,5 +1,9 @@
 # Prompt para reparar el Excel de seguimiento (Loma La Cruz)
 
+> **Historial.** 03/11/2026: la causa del aviso era que las 5 tablas se escribían con columnas `Column1`,
+> `Column2`… (openpyxl `_initialise_columns()`), distintas de los encabezados. Corregido en `construir.py`
+> (`TableColumn` con el nombre del encabezado) y comprobado en Excel para Mac: abre sin aviso, con macros.
+
 Copiar desde aquí:
 
 ---
@@ -41,8 +45,9 @@ sin errores, sin perder funciones.
 3. Revisar con criterios de Excel las partes sospechosas:
    - en las figuras: orden de los elementos del esquema, `id` únicos en `cNvPr`, que `xdr:to` quede después de
      `xdr:from`, `textlink`, nombres con espacios o caracteres especiales, `a:path` con `w` y `h` mayores que 0;
-   - en las tablas: nombres de columna únicos, sin saltos de línea, y que el `ref` de la tabla coincida con los
-     encabezados escritos;
+   - en las tablas: nombres de columna únicos, sin saltos de línea, que el `ref` de la tabla coincida con los
+     encabezados escritos y que **cada `tableColumn name` sea idéntico a su celda de encabezado** (si no, Excel
+     repara la tabla y borra todas las fórmulas `tblX[Columna]`; `tests/test_excel.py` lo revisa);
    - en las validaciones: `formula1` de lista sin `=`.
    LibreOffice (`soffice`) abre todo sin quejarse, así que **no sirve para validar el esquema estricto de Excel**:
    hay que validar contra el esquema OOXML o con el aviso real de Excel.

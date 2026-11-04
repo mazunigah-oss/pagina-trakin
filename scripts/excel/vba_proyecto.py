@@ -224,7 +224,7 @@ def proyecto(modulos) -> bytes:
         d += _reg(0x1C) + _reg(0x48) + _reg(0x31, struct.pack('<I', 0)) + _reg(0x1E, struct.pack('<I', 0))
         d += _reg(0x2C, struct.pack('<H', 0xFFFF)) + _reg(0x21 if tipo == 'modulo' else 0x22) + _reg(0x2B)
         flujos[nombre] = comprimir(_fuente(nombre, tipo, codigo))
-    d += _reg(0x10) + struct.pack('<I', 0)
+    d += _reg(0x10)   # Terminator (0x0010) + Reserved (4 bytes en 0); nada después
 
     lineas = [f'ID="{ID_PROYECTO}"']
     for nombre, tipo, _ in modulos:
