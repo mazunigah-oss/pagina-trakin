@@ -91,11 +91,17 @@ with st.sidebar:
     st.header('Loma La Cruz')
     dia = st.date_input('Ver al día', value=date.fromisoformat(C.hoy_chile()), format='DD/MM/YYYY').isoformat()
     st.divider()
-    clave = secreto('ADMIN_PASSWORD')
+    clave = str(secreto('ADMIN_PASSWORD') or '').strip()
+    # la sesión se guarda en la dirección (código firmado con la contraseña, válido solo hoy): así sobrevive a
+    # recargas y a pestañas suspendidas (Safari, celulares), donde Streamlit pierde la sesión
+    token = hmac.new(clave.encode(), f'admin-{C.hoy_chile()}'.encode(), 'sha256').hexdigest()[:24] if clave else None
+    if token and not st.session_state.get('admin') and hmac.compare_digest(str(st.query_params.get('admin', '')), token):
+        st.session_state.admin = True
     if st.session_state.get('admin'):
         st.success('Sesión de administrador')
         if st.button('Cerrar sesión', use_container_width=True):
             st.session_state.admin = False
+            st.query_params.pop('admin', None)
             st.rerun()
     else:
         with st.expander('Acceso administrador'):
@@ -105,8 +111,9 @@ with st.sidebar:
                 with st.form('login', border=False):
                     dada = st.text_input('Contraseña', type='password')
                     if st.form_submit_button('Ingresar', use_container_width=True):
-                        if hmac.compare_digest(dada.encode(), str(clave).encode()):
+                        if hmac.compare_digest(dada.strip().encode(), clave.encode()):
                             st.session_state.admin = True
+                            st.query_params['admin'] = token
                             st.rerun()
                         else:
                             st.error('Contraseña incorrecta')
@@ -587,15 +594,26 @@ if ADMIN:
                 if tipo.id == 'movimiento':
                     opciones['fecha'] = st.date_input('Fecha de los datos', value=date.fromisoformat(dia),
                                                       format='DD/MM/YYYY', key='fecha_movimiento').isoformat()
-                archivo = st.file_uploader('Archivo', type=['csv', 'txt', 'xlsx'], key=f'up_{tipo.id}')
+                # pegar los datos no usa el canal de subida de archivos, que algunos navegadores bloquean
+                # (Safari, cookies de terceros: "AxiosError ... 403")
+                forma = st.radio('Cómo cargar', ['📎 Subir archivo', '📋 Pegar desde Excel o CSV'], horizontal=True,
+                                 key=f'forma_{tipo.id}')
                 clave_rev = f'rev_{tipo.id}'
-                if archivo is None:
+                if forma.startswith('📎'):
+                    archivo = st.file_uploader('Archivo', type=['csv', 'txt', 'xlsx'], key=f'up_{tipo.id}',
+                                               help='Si la subida falla en su navegador, use "Pegar desde Excel o CSV".')
+                    contenido, nombre_arch = (archivo.getvalue(), archivo.name) if archivo is not None else (None, '')
+                else:
+                    texto = st.text_area('Seleccione en Excel las celdas (con la fila de títulos), copie y pegue aquí; '
+                                         'o pegue el contenido del CSV', height=180, key=f'txt_{tipo.id}')
+                    contenido = texto.encode('utf-8') if texto.strip() else None
+                    nombre_arch = f'pegado_{tipo.id}.txt'
+                if contenido is None:
                     st.session_state.pop(clave_rev, None)
                     return
-                contenido = archivo.getvalue()
-                firma = (archivo.name, len(contenido), json.dumps(opciones))
-                if st.button('Revisar archivo', key=f'rv_{tipo.id}'):
-                    st.session_state[clave_rev] = (*firma, I.revisar(MOTOR, tipo.id, contenido, archivo.name, opciones))
+                firma = (nombre_arch, len(contenido), json.dumps(opciones))
+                if st.button('Revisar archivo' if forma.startswith('📎') else 'Revisar datos', key=f'rv_{tipo.id}'):
+                    st.session_state[clave_rev] = (*firma, I.revisar(MOTOR, tipo.id, contenido, nombre_arch, opciones))
                 guardado = st.session_state.get(clave_rev)
                 if not guardado or guardado[:3] != firma:
                     return
@@ -618,9 +636,9 @@ if ADMIN:
                 for fila, m in rev.avisos:
                     st.info((f'Fila {fila}: ' if fila and fila < 100000 else '') + m)
                 if rev.hay_cambios and st.button('Confirmar carga', type='primary', key=f'ok_{tipo.id}'):
-                    I.aplicar(MOTOR, tipo.id, rev, archivo.name)
+                    I.aplicar(MOTOR, tipo.id, rev, nombre_arch)
                     st.session_state.pop(clave_rev, None)
-                    st.session_state.ultima_carga = (tipo.titulo, archivo.name, rev.resumen)
+                    st.session_state.ultima_carga = (tipo.titulo, nombre_arch, rev.resumen)
                     st.rerun()
                 elif not rev.hay_cambios:
                     st.caption('No hay cambios para guardar: los datos ya estaban cargados.')
