@@ -1,5 +1,5 @@
 Option Explicit
-' Panel: botones (celdas con vínculo a sí mismas) y clic en los mapas.
+' Panel: botones (celdas con vínculo a sí mismas); los mapas se recolorean al volver a la hoja o al cambiar la fecha.
 
 Private Sub Worksheet_FollowHyperlink(ByVal Target As Hyperlink)
     Dim c As Range
@@ -18,28 +18,18 @@ Private Sub Worksheet_FollowHyperlink(ByVal Target As Hyperlink)
         ImportarPlanilla
     ElseIf Toca(c, "BtnNota") Then
         AgregarNota
-    ElseIf Toca(c, "BtnFicha") Then
-        VerFicha
+    ElseIf Toca(c, "BtnDXF") Then
+        ImportarDXF
     End If
 End Sub
 
-Private Sub Worksheet_SelectionChange(ByVal Target As Range)
-    Dim m As Range, idx As Variant, z As Variant
-    If Target.Rows.Count > 1 Or Target.Columns.Count > 1 Then Exit Sub   ' (Cells.Count desborda con la hoja entera)
-    Set m = Me.Range("MapaInterv")
-    If Not Intersect(Target, m) Is Nothing Then
-        idx = Me.Range("GrillaSitios").Cells(Target.Row - m.Row + 1, Target.Column - m.Column + 1).Value
-    Else
-        Set m = Me.Range("MapaEntregas")
-        If Intersect(Target, m) Is Nothing Then Exit Sub
-        z = Me.Range("GrillaZonas").Cells(Target.Row - m.Row + 1, Target.Column - m.Column + 1).Value
-        If IsNumeric(z) Then
-            If z >= 1 And z <= 146 Then idx = Me.Range("ZonaSitio").Cells(z, 1).Value
-        End If
-    End If
-    If IsNumeric(idx) And Not IsEmpty(idx) Then
-        If idx >= 1 And idx <= 50 Then SeleccionarSitio CLng(idx)
-    End If
+Private Sub Worksheet_Activate()
+    ColorearMapas
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    If Not Intersect(Target, ThisWorkbook.Names("FechaPanel").RefersToRange) Is Nothing Or _
+       Not Intersect(Target, ThisWorkbook.Names("Vista").RefersToRange) Is Nothing Then ColorearMapas
 End Sub
 
 Private Function Toca(ByVal c As Range, ByVal nombre As String) As Boolean

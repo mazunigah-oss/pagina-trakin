@@ -2,46 +2,41 @@
 
     python scripts/excel/construir.py [salida.xlsm]
 
-Todo se calcula con fórmulas (funciona aunque las macros estén desactivadas); las macros agregan los botones,
-el clic en los mapas y la importación de tickets y de la planilla de obra.
+Los datos van en tablas de Excel (crecen solas); el Panel tiene indicadores, dos mapas dibujados como figuras
+(sitios y terrazas del plano), gráficos y referencias a las tablas dinámicas. Todo se calcula con fórmulas; las
+macros recolorean los mapas, responden al clic en un sitio, importan tickets, la planilla de obra y planos DXF.
 """
 import csv
 import json
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import numpy as np
-from matplotlib.path import Path as Poligono
 from openpyxl import Workbook
-from openpyxl.chart import BarChart, Reference
+from openpyxl.chart import BarChart, DoughnutChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.series import DataPoint
 from openpyxl.formatting.rule import DataBarRule, FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter as L
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.hyperlink import Hyperlink
+from openpyxl.worksheet.table import Table, TableFormula, TableStyleInfo
 
 sys.path.insert(0, str(Path(__file__).parent))
+import dibujo  # noqa: E402
+import tablas_dinamicas as TD  # noqa: E402
 import vba_proyecto  # noqa: E402
 import xlsm  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[2]
 SALIDA = Path(sys.argv[1]) if len(sys.argv) > 1 else RAIZ / 'data' / 'excel' / 'Seguimiento_Loma_La_Cruz.xlsm'
 GEO = json.loads((RAIZ / 'data' / 'geometria.json').read_text())
+HOY = (datetime.utcnow() - timedelta(hours=3)).date()     # Chile
 
-# colores de la página
 VERDE, AMARILLO, GRIS, CLARO, ROJO = '2F9E6B', 'FBE08C', 'CFD6D1', 'F1F3F0', 'E06666'
-TINTA, SUAVE, FONDO, BORDE = '1D2320', '5F6B64', 'F6F7F5', 'D9DED9'
-AZUL = '3B7DD8'
-
-MAX_MOV, MAX_CAM, MAX_ENT, MAX_GANTT, MAX_NOTAS = 5000, 5000, 400, 400, 2000
-PASO = 2.5                                        # metros por celda del mapa
-NC, NR = int(GEO['ancho'] / PASO) + 1, int(GEO['alto'] / PASO) + 1
-M1, M2, MR = 3, 3 + NC + 6, 22                    # columnas de inicio de los mapas y fila de inicio
-G1, G2 = 210, 210 + NC                            # grillas ocultas (índice de sitio / de terraza)
-CODS, CODZ, ZSIT = G2 + NC, G2 + NC + 1, G2 + NC + 2  # códigos de color por sitio, por terraza y sitio de cada terraza
-ULT = M2 + NC - 1                                 # última columna visible
+TINTA, SUAVE, FONDO, BORDE, OSCURO, AZUL, OCRE = '1D2320', '5F6B64', 'F4F6F3', 'D9DED9', '2F5D4A', '3B7DD8', 'B07A1F'
 
 delgado = Side(style='thin', color=BORDE)
 caja = Border(left=delgado, right=delgado, top=delgado, bottom=delgado)
@@ -56,7 +51,7 @@ def fuente(tam=10, negrita=False, color=TINTA, cursiva=False):
 
 
 def fecha_txt(ref):
-    """Fecha como texto dd-mm-aaaa sin TEXT() (sus códigos dependen del idioma de Excel)."""
+    """dd-mm-aaaa sin TEXT() (sus códigos de formato dependen del idioma de Excel)."""
     return f'RIGHT("0"&DAY({ref}),2)&"-"&RIGHT("0"&MONTH({ref}),2)&"-"&YEAR({ref})'
 
 
@@ -71,8 +66,6 @@ def leer_csv(p):
 
 def a_fecha(s):
     s = (s or '').strip()
-    if not s:
-        return None
     for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y'):
         try:
             return datetime.strptime(s, fmt).date()
@@ -89,17 +82,8 @@ def nombre(wb, n, ref):
     wb.defined_names[n] = DefinedName(n, attr_text=ref)
 
 
-def encabezados(ws, fila, titulos, anchos, nota_auto=()):
-    for i, (t, a) in enumerate(zip(titulos, anchos), 1):
-        c = ws.cell(fila, i, t)
-        auto = i in nota_auto
-        c.font = fuente(10, True, SUAVE if auto else 'FFFFFF')
-        c.fill = relleno('E9ECE9' if auto else '2F5D4A')
-        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        c.border = caja
-        ws.column_dimensions[L(i)].width = a
-    ws.row_dimensions[fila].height = 32
-    ws.freeze_panes = ws.cell(fila + 1, 1)
+def ancho_px(w):
+    return int(((256 * w + int(128 / 7)) / 256) * 7)
 
 
 def titulo_hoja(ws, texto, sub=''):
@@ -110,15 +94,15 @@ def titulo_hoja(ws, texto, sub=''):
         ws['A2'].font = fuente(10, color=SUAVE, cursiva=True)
 
 
-# ---------------------------------------------------------------- datos iniciales
+# ---------------------------------------------------------------- datos (lo más reciente)
 
 TERRENOS = [sitio_de(t['codigo']) for t in GEO['terrenos']]
-TERRENOS = sorted([t for t in TERRENOS if isinstance(t, int)]) + [t for t in TERRENOS if not isinstance(t, int)]
-FILA_SITIO = {s: i + 4 for i, s in enumerate(TERRENOS)}            # fila en la hoja Sitios
+TERRENOS = sorted(t for t in TERRENOS if isinstance(t, int)) + [t for t in TERRENOS if not isinstance(t, int)]
+FILA_SITIO = {s: i + 4 for i, s in enumerate(TERRENOS)}
 TERRAZA = {'acceso': 'Acceso', 'living': 'Living', 'fondo_patio': 'Fondo de patio', 'unica': 'Única'}
-ZONAS = [(sitio_de(z['terreno']), TERRAZA[z['zona']], z) for z in GEO['zonas']]
+CLAVE_FIG = {'acceso': 'acceso', 'living': 'living', 'fondo_patio': 'fondo', 'unica': 'unica'}
 
-# planilla "Resumen x Terraza" al 30/10/2026 (sitio, escarpe, corte geométrico, esc + corte c/esp, a botadero)
+# planilla "Resumen x Terraza" al 30/10/2026: sitio, escarpe, corte geométrico, esc + corte c/esp, a botadero
 MOV_30_10 = [
     (1, 57, 2490, 3566, 3566), (2, 62, 1709, 2479, 2479), (3, 61, 463, 735, 431), (4, 67, 413, 673, 673),
     (5, 59, 590, 909, 909), (6, 48, 590, 894, 894), (7, 45, 599, 902, 902), (8, 46, 533, 811, 811),
@@ -136,213 +120,231 @@ MOV_30_10 = [
     (14, 59, 0, 83, 0), (13, 55, 6, 85, 0), (12, 99, 734, 1166, 0),
 ]
 FECHA_MOV = date(2026, 10, 30)
+MOV = [[FECHA_MOV, s, e, c, p, b, None, None, 'Presupuestado' if p > 0 else 'Extra'] for s, e, c, p, b in MOV_30_10]
 
-# ---------------------------------------------------------------- libro y hojas
+CAM = []
+for t in leer_csv(RAIZ / 'data' / 'carga_2026-10-19' / '2_tickets_19-10.csv'):
+    sector = (t['SECTOR'] or '').strip()
+    CAM.append([t['TICKET'], a_fecha(t['FECHA']), t['HORA'], t['PATENTE'], float(t['VOLUMEN_M3'].replace(',', '.')),
+                int(sector) if sector.isdigit() and 1 <= int(sector) <= 48 else None, sector, t['TIPO'] or None,
+                t['ESTADO'] or 'VALIDO', t.get('EMPRESA') or None])
+for r in CAM:   # columnas calculadas: Semana, Viaje, Camión día, Camión semana
+    sem = r[1] - timedelta(days=r[1].weekday())
+    r += [sem, -1 if r[8] == 'ANULACION' else 1,
+          1 / sum(1 for x in CAM if x[3] == r[3] and x[1] == r[1]),
+          1 / sum(1 for x in CAM if x[3] == r[3] and x[1] - timedelta(days=x[1].weekday()) == sem)]
+
+ENTREGADAS = {(int(r['sitio']), r['zona']) for r in leer_csv(RAIZ / 'data' / 'carga_2026-10-19' /
+                                                              '3_terrazas_entregadas.csv') if r['estado'] == 'entregado'}
+ZONAS = [(sitio_de(z['terreno']), z['zona'], z) for z in GEO['zonas']]
+ORDEN_T = ['acceso', 'living', 'fondo_patio', 'unica']
+ENT = []
+for s, z, _ in sorted(ZONAS, key=lambda x: (TERRENOS.index(x[0]), ORDEN_T.index(x[1]))):
+    est = 'Entregada' if (s, z) in ENTREGADAS else 'Pendiente'
+    ENT.append([s, TERRAZA[z], est, None, None, est, f'{s}|{TERRAZA[z]}'])
+
+GAN = [[int(g['sitio']), a_fecha(g['inicio']), a_fecha(g['termino']), g['tarea']]
+       for g in sorted(leer_csv(RAIZ / 'data' / 'carga_inicial' / '5_programa_gantt.csv'), key=lambda g: int(g['sitio']))]
+
+# ---------------------------------------------------------------- libro
 
 wb = Workbook()
 wb.code_name = 'ThisWorkbook'
-orden = [('Panel', 'Panel'), ('Ficha sitio', 'Ficha'), ('Programa', 'Programa'), ('Sitios', 'Sitios'),
-         ('Movimiento', 'Movimiento'), ('Camiones', 'Camiones'), ('Entregas', 'Entregas'), ('Gantt', 'Gantt'),
-         ('Notas', 'Notas'), ('Ayuda', 'Ayuda'), ('Listas', 'Listas')]
+orden = [('Panel', 'Panel'), ('Tablas dinámicas', 'TablasDin'), ('Ficha sitio', 'Ficha'), ('Programa', 'Programa'),
+         ('Sitios', 'Sitios'), ('Movimiento', 'Movimiento'), ('Camiones', 'Camiones'), ('Entregas', 'Entregas'),
+         ('Gantt', 'Gantt'), ('Notas', 'Notas'), ('Geometría', 'Geometria'), ('Ayuda', 'Ayuda'), ('Listas', 'Listas')]
 H = {}
-for i, (titulo, codigo) in enumerate(orden):
+for i, (titulo, codigo_hoja) in enumerate(orden):
     ws = wb.active if i == 0 else wb.create_sheet()
     ws.title = titulo
-    ws.sheet_properties.codeName = codigo
-    H[codigo] = ws
-pan, fic, pro, sit, mov, cam, ent, gan, notas, ayu, lis = (H[c] for _, c in orden)
+    ws.sheet_properties.codeName = codigo_hoja
+    H[codigo_hoja] = ws
+pan, tdn, fic, pro, sit, mov, cam, ent, gan, notas, geo, ayu, lis = (H[c] for _, c in orden)
 lis.sheet_state = 'hidden'
 for ws in H.values():
-    ws.sheet_view.showGridLines = ws in (mov, cam, ent, gan, notas)
+    ws.sheet_view.showGridLines = False
 pan.sheet_properties.tabColor = VERDE
+tdn.sheet_properties.tabColor = AZUL
 for ws in (mov, cam, ent, gan, notas):
     ws.sheet_properties.tabColor = AMARILLO
 
-# ---------------------------------------------------------------- Movimiento (datos)
 
-titulo_hoja(mov, 'Movimiento de tierra por sitio', 'Pegue aquí la planilla "Resumen x Terraza" (o use el botón '
-            '"Planilla de movimiento" del Panel). Una fila por sitio y fecha; las filas sin presupuesto (esponjado 0) '
-            'con m³ a botadero cuentan como extra. Se usa el dato más reciente de cada sitio hasta el día del Panel.')
-encabezados(mov, 3, ['Fecha', 'Sitio', 'Escarpe m³', 'Corte geométrico m³', 'Esc + corte c/esp m³ (proyectado)',
-                     'A botadero m³ (retirado)', 'Extra adicional m³ (opcional)', 'Observación'],
-            [12, 8, 12, 14, 18, 16, 16, 40])
-for i, (s, e, c, p, b) in enumerate(MOV_30_10, 4):
-    for j, v in enumerate([FECHA_MOV, s, e, c, p, b], 1):
-        mov.cell(i, j, v)
-for r in range(4, MAX_MOV + 4):
-    mov.cell(r, 1).number_format = 'dd-mm-yyyy'
-    for j in range(3, 8):
-        mov.cell(r, j).number_format = '#,##0'
-mov.auto_filter.ref = f'A3:H{MAX_MOV + 3}'
-MV = {k: f'Movimiento!${c}$4:${c}${MAX_MOV + 3}' for k, c in zip('fecha sitio esc corte proy bot extra'.split(), 'ABCDEFG')}
+def tabla(ws, nombre_t, cab, filas, anchos, calc=None, formatos=None, sub='', fila0=3):
+    """Tabla de Excel con columnas calculadas (calc: {columna: fórmula con [#This Row]})."""
+    calc, formatos = calc or {}, formatos or {}
+    for j, (t, a) in enumerate(zip(cab, anchos), 1):
+        c = ws.cell(fila0, j, t)
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        ws.column_dimensions[L(j)].width = a
+    ws.row_dimensions[fila0].height = 32
+    filas = filas or [[None] * len(cab)]
+    for i, fila in enumerate(filas, fila0 + 1):
+        for j, t in enumerate(cab, 1):
+            v = f'={calc[t]}' if t in calc else fila[j - 1] if j - 1 < len(fila) else None
+            c = ws.cell(i, j, v)
+            if t in formatos:
+                c.number_format = formatos[t]
+    t = Table(displayName=nombre_t, ref=f'A{fila0}:{L(len(cab))}{fila0 + len(filas)}')
+    t.tableStyleInfo = TableStyleInfo(name='TableStyleMedium7', showRowStripes=True)
+    t._initialise_columns()
+    for col in t.tableColumns:
+        if col.name in calc:
+            col.calculatedColumnFormula = TableFormula(attr_text=calc[col.name])
+    ws.add_table(t)
+    ws.freeze_panes = ws.cell(fila0 + 1, 1)
+    if sub:
+        ws['A2'] = sub
+        ws['A2'].font = fuente(10, color=SUAVE, cursiva=True)
+    return t
 
-# ---------------------------------------------------------------- Camiones (datos)
 
-titulo_hoja(cam, 'Tickets de camiones', 'Use el botón "Tickets de camiones (CSV)" del Panel, o pegue las filas desde '
-            'la columna A. Sitio = número de sitio (vacío = general: pasajes, calle, etc.). Las columnas grises son '
-            'automáticas.')
-encabezados(cam, 3, ['Ticket', 'Fecha', 'Hora', 'Patente', 'm³', 'Sitio', 'Sector original', 'Tipo', 'Estado',
-                     'Empresa', 'Camión nuevo (período)', 'Camión nuevo (período anterior)'],
-            [14, 12, 8, 10, 8, 7, 12, 9, 11, 14, 11, 11], nota_auto=(11, 12))
-for i, t in enumerate(leer_csv(RAIZ / 'data' / 'carga_2026-10-19' / '2_tickets_19-10.csv'), 4):
-    sector = (t['SECTOR'] or '').strip()
-    vals = [t['TICKET'], a_fecha(t['FECHA']), t['HORA'], t['PATENTE'], float(t['VOLUMEN_M3'].replace(',', '.')),
-            int(sector) if sector.isdigit() and 1 <= int(sector) <= 48 else None, sector, t['TIPO'] or None,
-            t['ESTADO'] or 'VALIDO', t.get('EMPRESA') or None]
-    for j, v in enumerate(vals, 1):
-        cam.cell(i, j, v)
-CM = {k: f'Camiones!${c}$4:${c}${MAX_CAM + 3}' for k, c in
-      zip('ticket fecha hora patente m3 sitio sector tipo estado empresa nuevo nuevo_ant'.split(), 'ABCDEFGHIJKL')}
-for r in range(4, MAX_CAM + 4):
-    cam.cell(r, 1).number_format = '@'
-    cam.cell(r, 2).number_format = 'dd-mm-yyyy'
-    cam.cell(r, 3).number_format = '@'
-    cam.cell(r, 7).number_format = '@'
-    for k, (ini, fin) in ((11, ('PerIni', 'PerFin')), (12, ('PrevIni', 'PrevFin'))):
-        cam.cell(r, k, f'=IF(OR(B{r}="",B{r}<{ini},B{r}>{fin}),"",IF(COUNTIFS($D$4:D{r},D{r},$B$4:B{r},">="&{ini},'
-                       f'$B$4:B{r},"<="&{fin})=1,1,0))').font = fuente(9, color=SUAVE)
-cam.auto_filter.ref = f'A3:L{MAX_CAM + 3}'
+def esta(tbl, col):
+    return f'{tbl}[[#This Row],[{col}]]'
+
+
+# ---------------------------------------------------------------- hojas de datos (tablas de Excel)
+
+titulo_hoja(mov, 'Movimiento de tierra por sitio (planilla "Resumen x Terraza")')
+CAB_MOV = ['Fecha', 'Sitio', 'Escarpe m³', 'Corte geométrico m³', 'Proyectado m³', 'A botadero m³', 'Extra m³',
+           'Observación', 'Tipo']
+tabla(mov, 'tblMovimiento', CAB_MOV, MOV, [12, 8, 12, 15, 14, 14, 11, 34, 15],
+      calc={'Tipo': f'IF({esta("tblMovimiento", "Proyectado m³")}>0,"Presupuestado","Extra")'},
+      formatos={'Fecha': 'dd-mm-yyyy', **{k: '#,##0' for k in CAB_MOV[2:7]}},
+      sub='Una fila por sitio y fecha (Proyectado = "Esc + corte c/esp"; Retirado = "a botadero"). Filas sin '
+          'presupuesto (Proyectado 0) = extra. Para cada sitio se usa la fecha más reciente hasta el día del Panel, '
+          'así que una planilla nueva reemplaza a la anterior. Botón "📥 Planilla movimiento" del Panel.')
+
+titulo_hoja(cam, 'Tickets de camiones')
+CAB_CAM = ['Ticket', 'Fecha', 'Hora', 'Patente', 'm³', 'Sitio', 'Sector original', 'Tipo', 'Estado', 'Empresa',
+           'Semana', 'Viaje', 'Camión día', 'Camión semana']
+tabla(cam, 'tblCamiones', CAB_CAM, CAM, [13, 12, 8, 10, 8, 7, 12, 8, 11, 13, 12, 7, 10, 11],
+      calc={'Semana': f'{esta("tblCamiones", "Fecha")}-WEEKDAY({esta("tblCamiones", "Fecha")},2)+1',
+            'Viaje': f'IF({esta("tblCamiones", "Estado")}="ANULACION",-1,1)',
+            'Camión día': f'1/COUNTIFS(tblCamiones[Patente],{esta("tblCamiones", "Patente")},tblCamiones[Fecha],'
+                          f'{esta("tblCamiones", "Fecha")})',
+            'Camión semana': f'1/COUNTIFS(tblCamiones[Patente],{esta("tblCamiones", "Patente")},tblCamiones[Semana],'
+                             f'{esta("tblCamiones", "Semana")})'},
+      formatos={'Fecha': 'dd-mm-yyyy', 'Semana': 'dd-mm-yyyy', 'm³': '#,##0.0', 'Camión día': '0.00',
+                'Camión semana': '0.00', 'Ticket': '@', 'Hora': '@', 'Sector original': '@'},
+      sub='Botón "📥 Tickets (CSV)" del Panel, o pegue debajo de la última fila (la tabla crece sola). Sitio vacío = '
+          'general (pasajes, calle). Las 4 últimas columnas son automáticas.')
 dv = DataValidation(type='list', formula1='"VALIDO,ANULACION"', allow_blank=True)
 cam.add_data_validation(dv)
-dv.add(f'I4:I{MAX_CAM + 3}')
+dv.add('I4:I3000')
 
-# ---------------------------------------------------------------- Entregas (datos)
-
-titulo_hoja(ent, 'Entregas de terrazas', 'Cambie el estado con la lista desplegable y anote la fecha de entrega. '
-            'Un sitio está entregado cuando su acceso y su living están entregados (el fondo de patio no se considera).')
-encabezados(ent, 3, ['Sitio', 'Terraza', 'Estado', 'Fecha entrega', 'Observación', 'Estado al día del Panel', 'Clave'],
-            [8, 15, 13, 13, 40, 16, 10], nota_auto=(6, 7))
-entregadas = {(int(r['sitio']), r['zona']) for r in leer_csv(RAIZ / 'data' / 'carga_2026-10-19' /
-                                                              '3_terrazas_entregadas.csv') if r['estado'] == 'entregado'}
-zonas_orden = sorted(ZONAS, key=lambda x: (TERRENOS.index(x[0]), ['Acceso', 'Living', 'Fondo de patio', 'Única']
-                                                                  .index(x[1])))
-for i, (s, t, z) in enumerate(zonas_orden, 4):
-    clave_csv = {'Acceso': 'acceso', 'Living': 'living'}.get(t)
-    ent.cell(i, 1, s)
-    ent.cell(i, 2, t)
-    ent.cell(i, 3, 'Entregada' if (s, clave_csv) in entregadas else 'Pendiente')
-for r in range(4, MAX_ENT + 4):
-    ent.cell(r, 4).number_format = 'dd-mm-yyyy'
-    ent.cell(r, 6, f'=IF(A{r}="","",IF(AND(C{r}="Entregada",D{r}<>"",D{r}>FechaPanel),"En proceso",C{r}))').font = \
-        fuente(9, color=SUAVE)
-    ent.cell(r, 7, f'=IF(A{r}="","",A{r}&"|"&B{r})').font = fuente(9, color=SUAVE)
-ent.auto_filter.ref = f'A3:G{MAX_ENT + 3}'
-for rng, lista in ((f'C4:C{MAX_ENT + 3}', '"Pendiente,En proceso,Entregada"'),
-                   (f'B4:B{MAX_ENT + 3}', '"Acceso,Living,Fondo de patio,Única"')):
+titulo_hoja(ent, 'Entregas de terrazas')
+CAB_ENT = ['Sitio', 'Terraza', 'Estado', 'Fecha entrega', 'Observación', 'Estado al día', 'Clave']
+tabla(ent, 'tblEntregas', CAB_ENT, ENT, [8, 15, 13, 13, 36, 14, 12],
+      calc={'Estado al día': f'IF(AND({esta("tblEntregas", "Estado")}="Entregada",{esta("tblEntregas", "Fecha entrega")}'
+                             f'<>"",{esta("tblEntregas", "Fecha entrega")}>FechaPanel),"En proceso",'
+                             f'{esta("tblEntregas", "Estado")})',
+            'Clave': f'{esta("tblEntregas", "Sitio")}&"|"&{esta("tblEntregas", "Terraza")}'},
+      formatos={'Fecha entrega': 'dd-mm-yyyy'},
+      sub='Cambie el estado con la lista y anote la fecha. Un sitio está entregado cuando su acceso y su living '
+          'están entregados (el fondo de patio no cuenta).')
+for rng, lista in (('C4:C400', '"Pendiente,En proceso,Entregada"'), ('B4:B400', '"Acceso,Living,Fondo de patio,Única"')):
     dv = DataValidation(type='list', formula1=lista, allow_blank=True)
     ent.add_data_validation(dv)
     dv.add(rng)
-EN = {k: f'Entregas!${c}$4:${c}${MAX_ENT + 3}' for k, c in zip('sitio terraza estado fecha obs aldia clave'.split(),
-                                                                 'ABCDEFG')}
 
-# ---------------------------------------------------------------- Gantt (datos)
+titulo_hoja(gan, 'Carta Gantt (programa)')
+tabla(gan, 'tblGantt', ['Sitio', 'Inicio', 'Término', 'Tarea'], GAN, [8, 12, 12, 70],
+      formatos={'Inicio': 'dd-mm-yyyy', 'Término': 'dd-mm-yyyy'},
+      sub='Inicio y término del programa de cada sitio. El término es la fecha en que acceso y living deberían '
+          'estar entregados.')
 
-titulo_hoja(gan, 'Carta Gantt (programa)', 'Una fila por sitio con el inicio y el término del programa. Si un sitio '
-            'tiene varias filas se usa el primer inicio y el último término. La fecha de término es la fecha en que '
-            'acceso y living deberían estar entregados.')
-encabezados(gan, 3, ['Sitio', 'Inicio', 'Término', 'Tarea'], [8, 12, 12, 70])
-for i, g in enumerate(sorted(leer_csv(RAIZ / 'data' / 'carga_inicial' / '5_programa_gantt.csv'),
-                             key=lambda g: int(g['sitio'])), 4):
-    gan.cell(i, 1, int(g['sitio']))
-    gan.cell(i, 2, a_fecha(g['inicio']))
-    gan.cell(i, 3, a_fecha(g['termino']))
-    gan.cell(i, 4, g['tarea'])
-for r in range(4, MAX_GANTT + 4):
-    gan.cell(r, 2).number_format = gan.cell(r, 3).number_format = 'dd-mm-yyyy'
-gan.auto_filter.ref = f'A3:D{MAX_GANTT + 3}'
-GT = {k: f'Gantt!${c}$4:${c}${MAX_GANTT + 3}' for k, c in zip(('sitio', 'ini', 'fin'), 'ABC')}
+titulo_hoja(notas, 'Notas por sitio 📌')
+tabla(notas, 'tblNotas', ['Fecha y hora', 'Sitio', 'Responsable', 'Nota'], [], [17, 8, 20, 90],
+      formatos={'Fecha y hora': 'dd-mm-yyyy hh:mm'},
+      sub='Bitácora: cada actualización es una fila nueva (botón "📌 Nota" o escribiendo debajo).')
 
-# ---------------------------------------------------------------- Notas (datos)
+# ---------------------------------------------------------------- Listas (oculta)
 
-titulo_hoja(notas, 'Notas por sitio 📌', 'Bitácora: cada actualización es una fila nueva (botón "Agregar nota" del '
-            'Panel o de la Ficha, o escribiendo directo aquí).')
-encabezados(notas, 3, ['Fecha y hora', 'Sitio', 'Responsable', 'Nota'], [17, 8, 20, 90])
-for r in range(4, MAX_NOTAS + 4):
-    notas.cell(r, 1).number_format = 'dd-mm-yyyy hh:mm'
-    notas.cell(r, 4).alignment = Alignment(wrap_text=True, vertical='top')
-notas.auto_filter.ref = f'A3:D{MAX_NOTAS + 3}'
-NT = {k: f'Notas!${c}$4:${c}${MAX_NOTAS + 3}' for k, c in zip(('fecha', 'sitio', 'resp', 'nota'), 'ABCD')}
-
-# ---------------------------------------------------------------- Listas (oculta): período y gráfico
-
-lis['A1'], lis['B1'] = 'Parámetro', 'Valor'
-filas_lis = [
-    ('PerIni', '=IF(Vista="Semana",FechaPanel-WEEKDAY(FechaPanel,2)+1,FechaPanel)'),
-    ('PerFin', '=IF(Vista="Semana",B2+6,FechaPanel)'),
-    ('PrevIni', '=B2-IF(Vista="Semana",7,1)'),
-    ('PrevFin', '=B3-IF(Vista="Semana",7,1)'),
-    ('PerTxt', f'=IF(Vista="Semana","semana del "&{fecha_corta("B2")}&" al "&{fecha_txt("B3")},"día "&{fecha_txt("B2")})'),
-    ('PrevTxt', '=IF(Vista="Semana","semana anterior","día anterior")'),
-]
-for i, (n, f) in enumerate(filas_lis, 2):
+for i, (n, f) in enumerate([
+        ('PerIni', '=IF(Vista="Semana",FechaPanel-WEEKDAY(FechaPanel,2)+1,FechaPanel)'),
+        ('PerFin', '=IF(Vista="Semana",B2+6,FechaPanel)'),
+        ('PrevIni', '=B2-IF(Vista="Semana",7,1)'),
+        ('PrevFin', '=B3-IF(Vista="Semana",7,1)'),
+        ('PerTxt', f'=IF(Vista="Semana","semana del "&{fecha_corta("B2")}&" al "&{fecha_txt("B3")},'
+                   f'"día "&{fecha_txt("B2")})'),
+        ('PrevTxt', '=IF(Vista="Semana","semana anterior","día anterior")')], 2):
     lis.cell(i, 1, n)
     lis.cell(i, 2, f).number_format = 'dd-mm-yyyy'
     nombre(wb, n, f'Listas!$B${i}')
-# serie para el gráfico: 14 días o 14 semanas hasta el período elegido
-lis['D1'], lis['E1'], lis['F1'], lis['G1'], lis['H1'] = 'Desde', 'Hasta', 'Etiqueta', 'm³', 'Viajes'
+lis['D1'], lis['E1'], lis['F1'], lis['G1'] = 'Desde', 'Hasta', 'Período', 'm³ a botadero'
 for k in range(14):
     r = k + 2
     lis.cell(r, 4, f'=PerIni-IF(Vista="Semana",7,1)*{13 - k}').number_format = 'dd-mm-yyyy'
     lis.cell(r, 5, f'=D{r}+IF(Vista="Semana",6,0)').number_format = 'dd-mm-yyyy'
     lis.cell(r, 6, f'={fecha_corta(f"D{r}")}')
-    lis.cell(r, 7, f'=SUMIFS({CM["m3"]},{CM["fecha"]},">="&D{r},{CM["fecha"]},"<="&E{r})')
-    lis.cell(r, 8, f'=COUNTIFS({CM["fecha"]},">="&D{r},{CM["fecha"]},"<="&E{r},{CM["estado"]},"VALIDO")'
-                   f'-COUNTIFS({CM["fecha"]},">="&D{r},{CM["fecha"]},"<="&E{r},{CM["estado"]},"ANULACION")')
-# lista de sitios para las listas desplegables
+    lis.cell(r, 7, f'=SUMIFS(tblCamiones[m³],tblCamiones[Fecha],">="&D{r},tblCamiones[Fecha],"<="&E{r})')
 lis['J1'] = 'Sitios'
 for i, s in enumerate(TERRENOS, 2):
     lis.cell(i, 10, s)
 nombre(wb, 'ListaSitios', f'Listas!$J$2:$J${len(TERRENOS) + 1}')
-# terrazas del mapa: sitio, terraza, fila del sitio, código de color
-lis['L1'], lis['M1'], lis['N1'], lis['O1'] = 'Sitio', 'Terraza', 'Fila sitio', 'Código mapa entregas'
-for zi, (s, t, z) in enumerate(ZONAS, 1):
-    r = zi + 1
-    lis.cell(r, 12, s)
-    lis.cell(r, 13, t)
-    lis.cell(r, 14, FILA_SITIO[s] - 3)
-    lis.cell(r, 15, f'=IF(M{r}="Fondo de patio",5,IF(IFERROR(INDEX({EN["aldia"]},MATCH(L{r}&"|"&M{r},{EN["clave"]},0)),'
-                    f'"Pendiente")="Entregada",1,IF(INDEX(Sitios!$U$4:$U$53,N{r})=1,2,IF(IFERROR(INDEX({EN["aldia"]},'
-                    f'MATCH(L{r}&"|"&M{r},{EN["clave"]},0)),"")="En proceso",3,4))))')
+lis['L1'], lis['M1'] = 'Estado de los sitios', 'Sitios'
+for i, (et, f) in enumerate([('Completo', '=COUNTIF(Sitios!$K$4:$K$51,"Completo")'),
+                             ('Con intervención', '=COUNTIF(Sitios!$K$4:$K$51,"En intervención")'),
+                             ('Sin intervención', '=COUNTIF(Sitios!$K$4:$K$51,"Sin intervenir")')], 2):
+    lis.cell(i, 12, et)
+    lis.cell(i, 13, f)
+lis['O1'], lis['P1'] = 'Cumplimiento carta Gantt', 'Sitios'
+for i, (et, f) in enumerate([('Entregado', '=COUNTIF(Sitios!$R$4:$R$51,"Entregado*")'),
+                             ('Atrasado', '=COUNTIF(Sitios!$R$4:$R$51,"Atrasado")'),
+                             ('Pendiente', '=COUNTIF(Sitios!$R$4:$R$51,"Pendiente")'),
+                             ('Sin programa', '=COUNTIF(Sitios!$R$4:$R$51,"Sin programa")')], 2):
+    lis.cell(i, 15, et)
+    lis.cell(i, 16, f)
 
 # ---------------------------------------------------------------- Sitios (cálculo y detalle)
 
-titulo_hoja(sit, 'Detalle por sitio', '')
-sit['A2'] = f'="Al "&{fecha_txt("FechaPanel")}&" · avance = m³ retirados / m³ proyectados (esponjados). El extra (proforma) no entra al avance."'
+titulo_hoja(sit, 'Detalle por sitio')
+sit['A2'] = (f'="Al "&{fecha_txt("FechaPanel")}&" · avance = m³ retirados / m³ proyectados (esponjados). '
+             f'El extra (proforma) no entra al avance."')
 sit['A2'].font = fuente(10, color=SUAVE, cursiva=True)
-cols_sit = ['Sitio', 'Fecha del dato', 'Escarpe m³', 'Corte geom. m³', 'Proyectado m³', 'Retirado planilla m³',
+COLS_SIT = ['Sitio', 'Fecha del dato', 'Escarpe m³', 'Corte geom. m³', 'Proyectado m³', 'Retirado planilla m³',
             'Camiones posteriores m³', 'Retirado total m³', 'Avance', 'Extra m³ (proforma)', 'Movimiento', 'Acceso',
             'Living', 'Entregado', 'Fecha entrega', 'Inicio Gantt', 'Término Gantt', 'Cumplimiento carta Gantt',
-            'Notas', 'cód. interv.', 'debe entregar', 'etiqueta interv.', 'etiqueta entregas']
-encabezados(sit, 3, cols_sit, [7, 11, 10, 11, 12, 12, 12, 12, 16, 12, 15, 11, 11, 10, 11, 11, 11, 21, 7, 7, 7, 9, 9],
-            nota_auto=(20, 21, 22, 23))
+            'Notas', 'cód.', 'debe', 'etiq. interv.', 'etiq. entregas']
+for j, (t, a) in enumerate(zip(COLS_SIT, [7, 11, 10, 11, 12, 12, 12, 12, 16, 12, 15, 11, 11, 10, 11, 11, 11, 21, 7,
+                                          5, 5, 9, 9]), 1):
+    c = sit.cell(3, j, t)
+    c.font = fuente(10, True, 'FFFFFF' if j < 20 else SUAVE)
+    c.fill = relleno(OSCURO if j < 20 else 'E9ECE9')
+    c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    sit.column_dimensions[L(j)].width = a
+sit.row_dimensions[3].height = 32
+sit.freeze_panes = 'B4'
+MV = 'tblMovimiento'
 for s in TERRENOS:
     r = FILA_SITIO[s]
-    terr = '"Única"' if not isinstance(s, int) else None
+    ta, tl = ('"|Única"', '"|Única"') if not isinstance(s, int) else ('"|Acceso"', '"|Living"')
     f = {
         1: s,
-        2: f'=IFERROR(_xlfn.AGGREGATE(14,6,{MV["fecha"]}/({MV["sitio"]}=A{r})/({MV["fecha"]}<=FechaPanel),1),"")',
-        3: f'=IF(B{r}="",0,SUMIFS({MV["esc"]},{MV["sitio"]},A{r},{MV["fecha"]},B{r}))',
-        4: f'=IF(B{r}="",0,SUMIFS({MV["corte"]},{MV["sitio"]},A{r},{MV["fecha"]},B{r}))',
-        5: f'=IF(B{r}="",0,SUMIFS({MV["proy"]},{MV["sitio"]},A{r},{MV["fecha"]},B{r}))',
-        6: f'=IF(B{r}="",0,SUMIFS({MV["bot"]},{MV["sitio"]},A{r},{MV["fecha"]},B{r},{MV["proy"]},">0"))',
-        7: f'=SUMIFS({CM["m3"]},{CM["sitio"]},A{r},{CM["fecha"]},">"&IF(B{r}="",0,B{r}),{CM["fecha"]},"<="&FechaPanel)',
+        2: f'=IFERROR(_xlfn.AGGREGATE(14,6,{MV}[Fecha]/({MV}[Sitio]=A{r})/({MV}[Fecha]<=FechaPanel),1),"")',
+        3: f'=IF(B{r}="",0,SUMIFS({MV}[Escarpe m³],{MV}[Sitio],A{r},{MV}[Fecha],B{r}))',
+        4: f'=IF(B{r}="",0,SUMIFS({MV}[Corte geométrico m³],{MV}[Sitio],A{r},{MV}[Fecha],B{r}))',
+        5: f'=IF(B{r}="",0,SUMIFS({MV}[Proyectado m³],{MV}[Sitio],A{r},{MV}[Fecha],B{r}))',
+        6: f'=IF(B{r}="",0,SUMIFS({MV}[A botadero m³],{MV}[Sitio],A{r},{MV}[Fecha],B{r},{MV}[Proyectado m³],">0"))',
+        7: f'=SUMIFS(tblCamiones[m³],tblCamiones[Sitio],A{r},tblCamiones[Fecha],">"&IF(B{r}="",0,B{r}),'
+           f'tblCamiones[Fecha],"<="&FechaPanel)',
         8: f'=F{r}+G{r}',
         9: f'=IF(E{r}>0,H{r}/E{r},"")',
-        10: f'=IF(B{r}="",0,SUMIFS({MV["bot"]},{MV["sitio"]},A{r},{MV["fecha"]},B{r})-F{r}'
-            f'+SUMIFS({MV["extra"]},{MV["sitio"]},A{r},{MV["fecha"]},B{r}))',
+        10: f'=IF(B{r}="",0,SUMIFS({MV}[A botadero m³],{MV}[Sitio],A{r},{MV}[Fecha],B{r})-F{r}'
+            f'+SUMIFS({MV}[Extra m³],{MV}[Sitio],A{r},{MV}[Fecha],B{r}))',
         11: f'=IF(AND(E{r}>0,H{r}>=0.99*E{r}),"Completo",IF(H{r}+J{r}>0,"En intervención","Sin intervenir"))',
-        12: f'=IFERROR(INDEX({EN["aldia"]},MATCH(A{r}&"|"&{terr or chr(34) + "Acceso" + chr(34)},{EN["clave"]},0)),"Pendiente")',
-        13: f'=IFERROR(INDEX({EN["aldia"]},MATCH(A{r}&"|"&{terr or chr(34) + "Living" + chr(34)},{EN["clave"]},0)),"Pendiente")',
+        12: f'=IFERROR(INDEX(tblEntregas[Estado al día],MATCH(A{r}&{ta},tblEntregas[Clave],0)),"Pendiente")',
+        13: f'=IFERROR(INDEX(tblEntregas[Estado al día],MATCH(A{r}&{tl},tblEntregas[Clave],0)),"Pendiente")',
         14: f'=IF(AND(L{r}="Entregada",M{r}="Entregada"),"Sí","No")',
-        15: f'=IF(N{r}="Sí",IF(MAX(SUMIFS({EN["fecha"]},{EN["clave"]},A{r}&"|"&{terr or chr(34) + "Acceso" + chr(34)}),'
-            f'SUMIFS({EN["fecha"]},{EN["clave"]},A{r}&"|"&{terr or chr(34) + "Living" + chr(34)}))=0,"",'
-            f'MAX(SUMIFS({EN["fecha"]},{EN["clave"]},A{r}&"|"&{terr or chr(34) + "Acceso" + chr(34)}),'
-            f'SUMIFS({EN["fecha"]},{EN["clave"]},A{r}&"|"&{terr or chr(34) + "Living" + chr(34)}))),"")',
-        16: f'=IFERROR(_xlfn.AGGREGATE(15,6,{GT["ini"]}/({GT["sitio"]}=A{r}),1),"")',
-        17: f'=IFERROR(_xlfn.AGGREGATE(14,6,{GT["fin"]}/({GT["sitio"]}=A{r}),1),"")',
+        15: f'=IF(N{r}="Sí",IF(MAX(SUMIFS(tblEntregas[Fecha entrega],tblEntregas[Clave],A{r}&{ta}),'
+            f'SUMIFS(tblEntregas[Fecha entrega],tblEntregas[Clave],A{r}&{tl}))=0,"",'
+            f'MAX(SUMIFS(tblEntregas[Fecha entrega],tblEntregas[Clave],A{r}&{ta}),'
+            f'SUMIFS(tblEntregas[Fecha entrega],tblEntregas[Clave],A{r}&{tl}))),"")',
+        16: f'=IFERROR(_xlfn.AGGREGATE(15,6,tblGantt[Inicio]/(tblGantt[Sitio]=A{r}),1),"")',
+        17: f'=IFERROR(_xlfn.AGGREGATE(14,6,tblGantt[Término]/(tblGantt[Sitio]=A{r}),1),"")',
         18: f'=IF(Q{r}="","Sin programa",IF(N{r}="Sí",IF(O{r}="","Entregado",IF(O{r}<=Q{r},"Entregado a tiempo",'
             f'"Entregado con atraso")),IF(FechaPanel>Q{r},"Atrasado","Pendiente")))',
-        19: f'=COUNTIF({NT["sitio"]},A{r})',
+        19: f'=COUNTIF(tblNotas[Sitio],A{r})',
         20: f'=IF(K{r}="Completo",1,IF(K{r}="En intervención",2,3))',
         21: f'=IF(AND(Q{r}<>"",N{r}="No"),IF(FechaPanel>Q{r},1,0),0)',
         22: f'=A{r}&IF(J{r}>0," ⚠","")',
@@ -351,69 +353,74 @@ for s in TERRENOS:
     for j, v in f.items():
         c = sit.cell(r, j, v)
         c.border = caja
-        c.font = fuente(10, j == 1)
+        c.font = fuente(10 if j < 20 else 8, j == 1, TINTA if j < 20 else SUAVE)
         c.alignment = Alignment(horizontal='center')
-        if j in (20, 21, 22, 23):
-            c.font = fuente(8, color=SUAVE)
     for j in (2, 15, 16, 17):
         sit.cell(r, j).number_format = 'dd-mm-yyyy'
     for j in (3, 4, 5, 6, 7, 8, 10):
         sit.cell(r, j).number_format = '#,##0'
     sit.cell(r, 9).number_format = '0.0%'
-ult_s = FILA_SITIO[TERRENOS[-1]]
-r_tot = ult_s + 2
-sit.cell(r_tot, 1, 'Total sitios').font = fuente(10, True)
+ULT_S = FILA_SITIO[TERRENOS[-1]]
+R_TOT = ULT_S + 2
+sit.cell(R_TOT, 1, 'Total sitios').font = fuente(10, True)
 for j in (3, 4, 5, 6, 7, 8, 10):
-    sit.cell(r_tot, j, f'=SUM({L(j)}4:{L(j)}51)').number_format = '#,##0'
-    sit.cell(r_tot, j).font = fuente(10, True)
-sit.cell(r_tot, 9, f'=IF(E{r_tot}>0,H{r_tot}/E{r_tot},"")').number_format = '0.0%'
-sit.cell(ult_s + 1, 20, 0)  # fila 54: centinela (celdas del mapa sin sitio)
-sit.conditional_formatting.add(f'I4:I{ult_s}', DataBarRule(start_type='num', start_value=0, end_type='num',
+    c = sit.cell(R_TOT, j, f'=SUM({L(j)}4:{L(j)}51)')
+    c.number_format, c.font = '#,##0', fuente(10, True)
+sit.cell(R_TOT, 9, f'=IF(E{R_TOT}>0,H{R_TOT}/E{R_TOT},"")').number_format = '0.0%'
+sit.conditional_formatting.add(f'I4:I{ULT_S}', DataBarRule(start_type='num', start_value=0, end_type='num',
                                                             end_value=1, color=VERDE))
 for col, reglas in (('K', [('Completo', VERDE, 'FFFFFF'), ('En intervención', AMARILLO, TINTA)]),
                     ('R', [('Atrasado', ROJO, 'FFFFFF'), ('Entregado', VERDE, 'FFFFFF')]),
                     ('N', [('Sí', VERDE, 'FFFFFF')])):
     for txt, bg, fg in reglas:
-        sit.conditional_formatting.add(f'{col}4:{col}{ult_s}', FormulaRule(
+        sit.conditional_formatting.add(f'{col}4:{col}{ULT_S}', FormulaRule(
             formula=[f'LEFT({col}4,{len(txt)})="{txt}"'], fill=relleno(bg), font=Font(color=fg, bold=True)))
 for col in ('L', 'M'):
-    sit.conditional_formatting.add(f'{col}4:{col}{ult_s}', FormulaRule(formula=[f'{col}4="Entregada"'],
+    sit.conditional_formatting.add(f'{col}4:{col}{ULT_S}', FormulaRule(formula=[f'{col}4="Entregada"'],
                                                                       fill=relleno('D5EEDF')))
-sit.column_dimensions.group('T', 'W', hidden=True)
-sit.auto_filter.ref = f'A3:S{ult_s}'
+sit.auto_filter.ref = f'A3:S{ULT_S}'
 SI = {k: f'Sitios!${c}$4:${c}$51' for k, c in zip('sitio fdato esc corte proy retpl cam ret av extra mov acc liv '
                                                    'entr fent ini fin cumpl notas cod debe'.split(), 'ABCDEFGHIJKLMNOPQRSTU')}
 
 # ---------------------------------------------------------------- Panel
 
-for c in range(1, ULT + 3):
-    pan.column_dimensions[L(c)].width = 0.86 if c >= M1 else 1.7
-pan.sheet_view.zoomScale = 100
+COL_W = [2] + [9.3] * 28
+for i, w in enumerate(COL_W, 1):
+    pan.column_dimensions[L(i)].width = w
+ALTO = {1: 30, 2: 15, 3: 4, 4: 22, 5: 6, 6: 18, 7: 14, 8: 28, 9: 14, 10: 8, 11: 18, 12: 13}
+FILA_MAPA0, FILA_MAPA1 = 13, 38                   # filas de los mapas (20 px c/u)
+for r in range(FILA_MAPA0, FILA_MAPA1 + 1):
+    ALTO[r] = 15
+ALTO.update({39: 6, 40: 14, 41: 14, 42: 14, 43: 14, 44: 14, 45: 8, 46: 20})
+for r in range(47, 64):
+    ALTO[r] = 15
+ALTO.update({64: 8, 65: 20, 66: 16})
+for r, h in ALTO.items():
+    pan.row_dimensions[r].height = h
+pan.sheet_view.zoomScale = 85
 
 
-def unir(ws, r1, c1, r2, c2, valor=None, f=None, fill=None, al='center', borde=None, fmt=None):
+def unir(r1, c1, r2, c2, valor=None, f=None, fill=None, al='center', borde=None, fmt=None, ws=pan):
     if (r1, c1) != (r2, c2):
         ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
     c = ws.cell(r1, c1)
     if valor is not None:
         c.value = valor
     c.font = f or fuente()
-    c.alignment = Alignment(horizontal=al, vertical='center', wrap_text=True)
-    if fill:
-        for rr in range(r1, r2 + 1):
-            for cc in range(c1, c2 + 1):
+    c.alignment = Alignment(horizontal=al, vertical='center', wrap_text=True, indent=1 if al == 'left' else 0)
+    for rr in range(r1, r2 + 1):
+        for cc in range(c1, c2 + 1):
+            if fill:
                 ws.cell(rr, cc).fill = relleno(fill)
-    if borde:
-        for rr in range(r1, r2 + 1):
-            for cc in range(c1, c2 + 1):
+            if borde:
                 ws.cell(rr, cc).border = borde
     if fmt:
         c.number_format = fmt
     return c
 
 
-def boton(ws, r, c1, c2, texto, nombre_btn, color='2F5D4A', destino=None):
-    celda = unir(ws, r, c1, r, c2, texto, fuente(10, True, 'FFFFFF'), color, borde=Border())
+def boton(r, c1, c2, texto, nombre_btn, color=OSCURO, destino=None, ws=pan):
+    celda = unir(r, c1, r, c2, texto, None, color, ws=ws)
     celda.hyperlink = Hyperlink(ref=celda.coordinate, location=destino or f"'{ws.title}'!{celda.coordinate}",
                                 tooltip=texto)
     celda.font = fuente(10, True, 'FFFFFF')   # el vínculo aplica el estilo "Hipervínculo"; se deja como botón
@@ -422,368 +429,386 @@ def boton(ws, r, c1, c2, texto, nombre_btn, color='2F5D4A', destino=None):
     return celda
 
 
-alturas = {1: 32, 2: 18, 3: 6, 4: 24, 5: 5, 6: 24, 7: 10, 8: 22, 9: 15, 10: 30, 11: 15, 12: 10, 13: 22, 14: 15,
-           15: 30, 16: 15, 17: 10, 18: 22, 19: 14, 20: 4, 21: 4}
-for r, h in alturas.items():
-    pan.row_dimensions[r].height = h
-unir(pan, 1, M1, 1, ULT, 'Avance movimiento de tierra — Loma La Cruz', fuente(20, True), al='left')
-unir(pan, 2, M1, 2, ULT, f'="48 sitios · Etapas 1 y 2 · datos al "&{fecha_txt("FechaPanel")}&'
-                         f'"   (los datos se editan en las hojas amarillas)"', fuente(10, color=SUAVE), al='left')
-# controles
-unir(pan, 4, M1, 4, M1 + 13, 'Ver al día', fuente(10, True), al='right')
-dia = unir(pan, 4, M1 + 15, 4, M1 + 34, '=TODAY()', fuente(12, True), 'FFF7D6', borde=caja, fmt='dd-mm-yyyy')
-nombre(wb, 'FechaPanel', f'Panel!${L(M1 + 15)}$4')
+unir(1, 2, 1, 20, 'Avance movimiento de tierra — Loma La Cruz', fuente(20, True), al='left')
+unir(2, 2, 2, 28, f'="48 sitios · Etapas 1 y 2 · datos al "&{fecha_txt("FechaPanel")}&"   ·   los datos se '
+                  f'editan en las hojas amarillas; mapas, gráficos y tablas dinámicas se actualizan con ↻"',
+     fuente(10, color=SUAVE), al='left')
+unir(4, 2, 4, 2, 'Ver al día', fuente(10, True), al='right')
+unir(4, 3, 4, 4, '=TODAY()', fuente(12, True), 'FFF7D6', borde=caja, fmt='dd-mm-yyyy')
+nombre(wb, 'FechaPanel', 'Panel!$C$4')
 dv = DataValidation(type='date', operator='greaterThan', formula1='40000', allow_blank=False,
                     error='Escriba una fecha (dd-mm-aaaa).', errorTitle='Fecha', showErrorMessage=True)
 pan.add_data_validation(dv)
-dv.add(dia.coordinate)
-boton(pan, 4, M1 + 37, M1 + 52, '◀ Anterior', 'BtnAnterior')
-boton(pan, 4, M1 + 54, M1 + 63, 'Hoy', 'BtnHoy')
-boton(pan, 4, M1 + 65, M1 + 80, 'Siguiente ▶', 'BtnSiguiente')
-unir(pan, 4, M1 + 84, 4, M1 + 93, 'Vista', fuente(10, True), al='right')
-vista = unir(pan, 4, M1 + 95, 4, M1 + 112, 'Día', fuente(12, True), 'FFF7D6', borde=caja)
-nombre(wb, 'Vista', f'Panel!${L(M1 + 95)}$4')
+dv.add('C4')
+boton(4, 5, 5, '◀', 'BtnAnterior')
+boton(4, 6, 6, 'Hoy', 'BtnHoy')
+boton(4, 7, 7, '▶', 'BtnSiguiente')
+unir(4, 8, 4, 8, 'Vista', fuente(10, True), al='right')
+unir(4, 9, 4, 9, 'Día', fuente(12, True), 'FFF7D6', borde=caja)
+nombre(wb, 'Vista', 'Panel!$I$4')
 dv = DataValidation(type='list', formula1='"Día,Semana"', allow_blank=False)
 pan.add_data_validation(dv)
-dv.add(vista.coordinate)
-boton(pan, 4, M1 + 116, M1 + 135, '↻ Actualizar', 'BtnActualizar', AZUL)
-unir(pan, 4, M1 + 138, 4, ULT, '◀ ▶ mueven un día o una semana según la vista', fuente(9, color=SUAVE, cursiva=True),
+dv.add('I4')
+boton(4, 10, 11, '↻ Actualizar', 'BtnActualizar', AZUL)
+boton(4, 12, 14, '📥 Tickets (CSV)', 'BtnCamiones', OCRE)
+boton(4, 15, 17, '📥 Planilla movimiento', 'BtnPlanilla', OCRE)
+boton(4, 18, 19, '📌 Nota', 'BtnNota', OCRE)
+boton(4, 20, 21, '📐 Plano DXF', 'BtnDXF', '5F6B64')
+boton(4, 22, 24, '🔄 Tablas dinámicas', None, AZUL, destino="'Tablas dinámicas'!A1")
+boton(4, 25, 26, '❔ Ayuda', None, '5F6B64', destino="'Ayuda'!A1")
+
+# indicadores (6 tarjetas)
+unir(6, 2, 6, 28, f'="📊 Indicadores al "&{fecha_txt("FechaPanel")}&"  ·  camiones del "&PerTxt', fuente(13, True),
      al='left')
-unir(pan, 6, M1, 6, M1 + 13, 'Cargar', fuente(10, True), al='right')
-boton(pan, 6, M1 + 15, M1 + 48, '📥 Tickets de camiones (CSV)', 'BtnCamiones', 'B07A1F')
-boton(pan, 6, M1 + 50, M1 + 83, '📥 Planilla de movimiento', 'BtnPlanilla', 'B07A1F')
-boton(pan, 6, M1 + 85, M1 + 106, '📌 Agregar nota', 'BtnNota', 'B07A1F')
-boton(pan, 6, M1 + 108, M1 + 127, '🔎 Ficha de sitio', 'BtnFicha', '2F5D4A')
-boton(pan, 6, M1 + 129, M1 + 144, '❔ Ayuda', None, '5F6B64', destino="'Ayuda'!A1")
-
-# indicadores
-ANCHO_T = (ULT - M1 + 1 - 3 * 3) // 4
-
-
-def tile(r, k, etiqueta, valor, sub, fmt=None, color_sub=SUAVE):
-    c1 = M1 + k * (ANCHO_T + 3)
-    c2 = c1 + ANCHO_T - 1
-    unir(pan, r, c1, r, c2, etiqueta, fuente(9, True, SUAVE), FONDO, al='left')
-    unir(pan, r + 1, c1, r + 1, c2, valor, fuente(18, True), FONDO, al='left', fmt=fmt)
-    unir(pan, r + 2, c1, r + 2, c2, sub, fuente(9, color=color_sub), FONDO, al='left')
-
-
-cam_p = f'SUM({CM["nuevo"]})'
-cam_a = f'SUM({CM["nuevo_ant"]})'
-
-
-def viajes(i, f):
-    return (f'(COUNTIFS({CM["fecha"]},">="&{i},{CM["fecha"]},"<="&{f},{CM["estado"]},"VALIDO")'
-            f'-COUNTIFS({CM["fecha"]},">="&{i},{CM["fecha"]},"<="&{f},{CM["estado"]},"ANULACION"))')
-
-
-def m3(i, f, extra=''):
-    return f'SUMIFS({CM["m3"]},{CM["fecha"]},">="&{i},{CM["fecha"]},"<="&{f}{extra})'
-
-
-def comparar(a, b):
-    return f'=IF(({a})-({b})>=0,"+","−")&FIXED(ABS(({a})-({b})),0)&" vs "&PrevTxt'
-
-
-unir(pan, 8, M1, 8, ULT, '="🚚 Camiones — "&PerTxt', fuente(13, True), al='left')
-tile(9, 0, 'Camiones (patentes distintas)', f'={cam_p}', comparar(cam_p, cam_a), '0')
-tile(9, 1, 'Viajes (válidos − anulados)', f'={viajes("PerIni", "PerFin")}',
-     comparar(viajes('PerIni', 'PerFin'), viajes('PrevIni', 'PrevFin')), '0')
-tile(9, 2, 'm³ a botadero', f'={m3("PerIni", "PerFin")}', comparar(m3('PerIni', 'PerFin'), m3('PrevIni', 'PrevFin')),
-     '#,##0')
-SIN_SITIO = ',' + CM['sitio'] + ',""'
-tile(9, 3, 'm³ sin sitio (pasajes, calle, general)', '=' + m3('PerIni', 'PerFin', SIN_SITIO),
-     '="no se suman al avance de los sitios"', '#,##0')
-
-unir(pan, 13, M1, 13, ULT, f'="📊 Avance general al "&{fecha_txt("FechaPanel")}', fuente(13, True), al='left')
 proy, ret = f'SUM({SI["proy"]})', f'SUM({SI["ret"]})'
 deben = f'COUNTIF({SI["debe"]},1)+COUNTIFS({SI["fin"]},"<"&FechaPanel,{SI["entr"]},"Sí")'
 cumplen = f'COUNTIFS({SI["fin"]},"<"&FechaPanel,{SI["entr"]},"Sí")'
-tile(14, 0, 'Avance movimiento de tierra', f'=IF({proy}>0,{ret}/{proy},0)',
-     f'=FIXED({ret},0)&" de "&FIXED({proy},0)&" m³ (esponjados)"', '0.0%')
-tile(14, 1, 'Movimiento extra (proforma)', '=SUM(Sitios!$J$4:$J$53)', '="no entra al avance"', '#,##0" m³"')
-tile(14, 2, 'Sitios entregados', f'=COUNTIF({SI["entr"]},"Sí")', '="acceso y living entregados"', '0')
-tile(14, 3, 'Cumplimiento carta Gantt', f'={cumplen}&" de "&({deben})',
-     f'=IF(({deben})-({cumplen})>0,FIXED(({deben})-({cumplen}),0)&" atrasados (deberían estar entregados)","al día")',
-     None, ROJO)
-
-# mapas
-unir(pan, 18, M1, 18, M1 + NC - 1, 'Mapa de intervención', fuente(13, True), al='left')
-unir(pan, 18, M2, 18, M2 + NC - 1, 'Mapa de entregas y cumplimiento', fuente(13, True), al='left')
-unir(pan, 19, M1, 19, ULT, 'Haga clic en un sitio de cualquiera de los mapas para ver su detalle (abajo).',
-     fuente(9, color=SUAVE, cursiva=True), al='left')
-
-ys, xs = np.mgrid[0:NR, 0:NC]
-centros = np.c_[(xs.ravel() + .5) * PASO, (ys.ravel() + .5) * PASO]
-gz = np.zeros((NR, NC), int)                       # índice de terraza (1..146), 0 = nada
-for zi, (_, _, z) in enumerate(ZONAS, 1):
-    m = Poligono(z['puntos']).contains_points(centros).reshape(NR, NC) & (gz == 0)
-    gz[m] = zi
-zona_fila = np.array([0] + [FILA_SITIO[s] - 3 for s, _, _ in ZONAS])
-gs = zona_fila[gz]                                 # índice de sitio (1..50), 0 = nada
-SIN_S, SIN_Z = len(TERRENOS) + 1, len(ZONAS) + 1   # centinelas (código 0)
-blanco = Side(style='thin', color='FFFFFF')
-bordes = {}
+cam_p = ('ROUND(IF(Vista="Semana",SUMIFS(tblCamiones[Camión semana],tblCamiones[Semana],{i}),'
+         'SUMIFS(tblCamiones[Camión día],tblCamiones[Fecha],{i})),0)')
 
 
-def borde_celda(g, r, c):
-    v = g[r, c]
-    lados = tuple(not (0 <= rr < NR and 0 <= cc < NC) or g[rr, cc] != v
-                  for rr, cc in ((r, c - 1), (r, c + 1), (r - 1, c), (r + 1, c)))
-    if lados not in bordes:
-        bordes[lados] = Border(*(blanco if x else Side() for x in lados))
-    return bordes[lados]
+def viajes(i, f):
+    return f'SUMIFS(tblCamiones[Viaje],tblCamiones[Fecha],">="&{i},tblCamiones[Fecha],"<="&{f})'
 
 
-for r in range(NR):
-    pan.row_dimensions[MR + r].height = 4.6
-    for c in range(NC):
-        if gs[r, c]:
-            pan.cell(MR + r, M1 + c).border = borde_celda(gs, r, c)
-            pan.cell(MR + r, M2 + c).border = borde_celda(gz, r, c)
-        pan.cell(MR + r, G1 + c, int(gs[r, c]) or SIN_S)
-        pan.cell(MR + r, G2 + c, int(gz[r, c]) or SIN_Z)
-for i in range(SIN_S):
-    pan.cell(MR + i, CODS, f'=Sitios!T{i + 4}' if i < len(TERRENOS) else 0)
-for i in range(SIN_Z):
-    pan.cell(MR + i, CODZ, f'=Listas!O{i + 2}' if i < len(ZONAS) else 0)
-    pan.cell(MR + i, ZSIT, int(zona_fila[i + 1]) if i < len(ZONAS) else 0)
-for c in range(G1, ZSIT + 1):
-    pan.column_dimensions[L(c)].hidden = True
-rango1 = f'{L(M1)}{MR}:{L(M1 + NC - 1)}{MR + NR - 1}'
-rango2 = f'{L(M2)}{MR}:{L(M2 + NC - 1)}{MR + NR - 1}'
-nombre(wb, 'MapaInterv', f'Panel!${L(M1)}${MR}:${L(M1 + NC - 1)}${MR + NR - 1}')
-nombre(wb, 'MapaEntregas', f'Panel!${L(M2)}${MR}:${L(M2 + NC - 1)}${MR + NR - 1}')
-nombre(wb, 'GrillaSitios', f'Panel!${L(G1)}${MR}:${L(G1 + NC - 1)}${MR + NR - 1}')
-nombre(wb, 'GrillaZonas', f'Panel!${L(G2)}${MR}:${L(G2 + NC - 1)}${MR + NR - 1}')
-nombre(wb, 'ZonaSitio', f'Panel!${L(ZSIT)}${MR}:${L(ZSIT)}${MR + SIN_Z - 1}')
-cods = f'${L(CODS)}${MR}:${L(CODS)}${MR + SIN_S - 1}'
-codz = f'${L(CODZ)}${MR}:${L(CODZ)}${MR + SIN_Z - 1}'
-for k, color in ((1, VERDE), (2, AMARILLO), (3, GRIS)):
-    pan.conditional_formatting.add(rango1, FormulaRule(formula=[f'INDEX({cods},{L(G1)}{MR})={k}'],
-                                                       fill=relleno(color), stopIfTrue=True))
-for k, color in ((1, VERDE), (2, ROJO), (3, AMARILLO), (4, GRIS), (5, CLARO)):
-    pan.conditional_formatting.add(rango2, FormulaRule(formula=[f'INDEX({codz},{L(G2)}{MR})={k}'],
-                                                       fill=relleno(color), stopIfTrue=True))
-# números de sitio (en la celda del sitio más cercana a su centro)
-for s in TERRENOS:
-    i = FILA_SITIO[s] - 3
-    rr, cc = np.nonzero(gs == i)
-    if not len(rr):
-        continue
-    k = np.argmin((rr - rr.mean()) ** 2 + (cc - cc.mean()) ** 2)
-    for col0, colf in ((M1, 'V'), (M2, 'W')):
-        c = pan.cell(MR + int(rr[k]), col0 + int(cc[k]), f'=Sitios!{colf}{FILA_SITIO[s]}')
-        c.font = fuente(7, True)
-        c.alignment = Alignment(horizontal='center', vertical='center')
-
-# leyendas
-r0 = MR + NR + 1
-pan.row_dimensions[r0 - 1].height = 8
+def m3(i, f):
+    return f'SUMIFS(tblCamiones[m³],tblCamiones[Fecha],">="&{i},tblCamiones[Fecha],"<="&{f})'
 
 
-def leyenda(r, col0, color, texto):
-    pan.row_dimensions[r].height = 15
-    unir(pan, r, col0, r, col0 + 2, None, fill=color)
-    unir(pan, r, col0 + 4, r, col0 + NC - 1, texto, fuente(9), al='left')
+def comparar(a, b):
+    return f'IF(({a})-({b})>=0,"+","−")&FIXED(ABS(({a})-({b})),0)'
 
 
-leyenda(r0, M1, VERDE, f'="Movimiento completo ("&COUNTIF({SI["mov"]},"Completo")&") — 100 % del volumen proyectado"')
-leyenda(r0 + 1, M1, AMARILLO, f'="Con intervención ("&COUNTIF({SI["mov"]},"En intervención")&") — se está trabajando"')
-leyenda(r0 + 2, M1, GRIS, f'="Sin intervención ("&COUNTIF({SI["mov"]},"Sin intervenir")&")"')
-leyenda(r0 + 3, M1, 'FFFFFF', f'="⚠ Movimiento extra ("&COUNTIF({SI["extra"]},">0")&") — retiró volumen adicional '
-                              f'al proyectado (proforma)"')
-leyenda(r0, M2, VERDE, f'="✅ Entregada ("&COUNTIF({SI["entr"]},"Sí")&" sitios) — acceso y living entregados"')
-leyenda(r0 + 1, M2, ROJO, f'="⚠ Debería estar entregada ("&COUNTIF({SI["debe"]},1)&" sitios) — su fecha de la carta '
-                          f'Gantt ya pasó"')
-leyenda(r0 + 2, M2, AMARILLO, 'En proceso de entrega')
-leyenda(r0 + 3, M2, GRIS, 'Pendiente — aún no le toca')
-leyenda(r0 + 4, M2, CLARO, 'Fondo de patio — no se considera en las entregas')
+TARJETAS = [
+    ('Avance movimiento de tierra', f'=IF({proy}>0,{ret}/{proy},0)', '0.0%',
+     f'=FIXED({ret},0)&" de "&FIXED({proy},0)&" m³"', SUAVE),
+    ('Movimiento extra (proforma)', '=SUM(Sitios!$J$4:$J$53)', '#,##0" m³"', '="no entra al avance"', SUAVE),
+    ('Sitios con movimiento completo', '=COUNTIF(Sitios!$K$4:$K$51,"Completo")', '0" de 48"',
+     '=COUNTIF(Sitios!$K$4:$K$51,"En intervención")&" con intervención"', SUAVE),
+    ('Sitios entregados', f'=COUNTIF({SI["entr"]},"Sí")', '0', '="acceso y living entregados"', SUAVE),
+    ('Cumplimiento carta Gantt', f'={cumplen}&" de "&({deben})', None,
+     f'=IF(({deben})-({cumplen})>0,FIXED(({deben})-({cumplen}),0)&" atrasados","al día")', ROJO),
+    ('Camiones · viajes · m³ del período', f'={cam_p.format(i="PerIni")}&" · "&{viajes("PerIni", "PerFin")}&" · "&'
+                                          f'FIXED({m3("PerIni", "PerFin")},0)', None,
+     f'={comparar(m3("PerIni", "PerFin"), m3("PrevIni", "PrevFin"))}&" m³ vs "&PrevTxt', SUAVE),
+]
+for k, (et, val, fmt, sub, color_sub) in enumerate(TARJETAS):
+    c1, c2 = 2 + k * 4, 28 if k == 5 else 2 + k * 4 + 3
+    unir(7, c1, 7, c2, et, fuente(9, True, SUAVE), FONDO, al='left')
+    unir(8, c1, 8, c2, val, fuente(18, True), FONDO, al='left', fmt=fmt)
+    unir(9, c1, 9, c2, sub, fuente(9, color=color_sub), FONDO, al='left')
+    for r in (7, 8, 9):
+        pan.cell(r, c1).border = Border(left=Side(style='thick', color='FFFFFF'))
 
-# sitio seleccionado (se elige con clic en el mapa o en la hoja Ficha sitio)
-rs = r0 + 6
-pan.row_dimensions[rs].height = 24
+# títulos de los mapas y panel derecho (sitio seleccionado)
+unir(11, 2, 11, 8, 'Mapa de intervención', fuente(13, True), al='left')
+unir(11, 9, 11, 15, 'Mapa de entregas y cumplimiento', fuente(13, True), al='left')
+unir(12, 2, 12, 15, 'Clic en un sitio para ver su detalle →', fuente(9, color=SUAVE, cursiva=True), al='left')
+nombre(wb, 'CajaMapa1', f'Panel!$B${FILA_MAPA0}:$H${FILA_MAPA1}')
+nombre(wb, 'CajaMapa2', f'Panel!$I${FILA_MAPA0}:$O${FILA_MAPA1}')
 SEL = "'Ficha sitio'!$C$3"
-fila_sel = f'MATCH({SEL},{SI["sitio"].replace("$51", "$53")},0)'
+fila_sel = f'MATCH({SEL},Sitios!$A$4:$A$53,0)'
 
 
 def dato(col):
     return f'INDEX(Sitios!${col}$4:${col}$53,{fila_sel})'
 
 
-unir(pan, rs, M1, rs, ULT, f'=IFERROR("🔎 Sitio "&{SEL}&" — "&{dato("K")}&" · "&{dato("R")},'
-                           f'"🔎 Haga clic en un sitio del mapa")', fuente(13, True), FONDO, al='left')
+unir(11, 17, 11, 28, f'=IFERROR("🔎 Sitio "&{SEL}&" — "&{dato("K")},"🔎 Haga clic en un sitio")', fuente(13, True),
+     FONDO, al='left')
 campos_sel = [
-    ('Avance', f'=IFERROR(IF({dato("E")}>0,FIXED(100*{dato("H")}/{dato("E")},1)&" %  ("&FIXED({dato("H")},0)&" de "&'
-               f'FIXED({dato("E")},0)&" m³)","sin volumen proyectado"),"")'),
+    ('Avance', f'=IFERROR(IF({dato("E")}>0,FIXED(100*{dato("H")}/{dato("E")},1)&" %","sin volumen proyectado"),"")'),
+    ('Retirado / proyectado', f'=IFERROR(FIXED({dato("H")},0)&" de "&FIXED({dato("E")},0)&" m³","")'),
     ('Extra (proforma)', f'=IFERROR(FIXED({dato("J")},0)&" m³","")'),
     ('Dato de la planilla', f'=IFERROR(IF({dato("B")}="","sin datos",{fecha_txt(dato("B"))}),"")'),
     ('Acceso / Living', f'=IFERROR({dato("L")}&" / "&{dato("M")},"")'),
-    ('Carta Gantt', f'=IFERROR(IF({dato("Q")}="","sin programa",{fecha_txt(dato("P"))}&" al "&{fecha_txt(dato("Q"))}),"")'),
-    ('Notas 📌', f'=IFERROR({dato("S")}&IF({dato("S")}>0," (ver Ficha sitio)",""),"")'),
+    ('Carta Gantt', f'=IFERROR(IF({dato("Q")}="","sin programa",{fecha_txt(dato("P"))}&" al "&'
+                    f'{fecha_txt(dato("Q"))}),"")'),
+    ('Cumplimiento', f'=IFERROR({dato("R")},"")'),
+    ('Notas 📌', f'=IFERROR({dato("S")}&IF({dato("S")}>0," · última: "&INDEX(tblNotas[Nota],_xlfn.AGGREGATE(14,6,'
+                f'(ROW(tblNotas[Sitio])-ROW(tblNotas[#Headers]))/(tblNotas[Sitio]={SEL}),1)),""),"")'),
 ]
-anc = (ULT - M1 + 1) // 3
 for k, (et, f) in enumerate(campos_sel):
-    r = rs + 1 + k // 3
-    c1 = M1 + (k % 3) * anc
-    pan.row_dimensions[r].height = 18
-    unir(pan, r, c1, r, c1 + 22, et, fuente(9, True, SUAVE), FONDO, al='left')
-    unir(pan, r, c1 + 23, r, c1 + anc - 1, f, fuente(10), FONDO, al='left')
-pan.row_dimensions[rs + 3].height = 8
+    r = 13 + k
+    unir(r, 17, r, 19, et, fuente(9, True, SUAVE), FONDO, al='left')
+    unir(r, 20, r, 28, f, fuente(10), FONDO, al='left')
+for txt, color in (('Entregado', VERDE), ('Atrasado', ROJO)):
+    pan.conditional_formatting.add('T19', FormulaRule(formula=[f'LEFT(T19,{len(txt)})="{txt}"'],
+                                                      font=Font(color=color, bold=True)))
 
-# gráfico de camiones por día / semana
-rg = rs + 4
-unir(pan, rg, M1, rg, ULT, '="🚚 m³ a botadero por "&IF(Vista="Semana","semana (últimas 14)","día (últimos 14)")',
+# leyendas
+LEY1 = [(VERDE, f'="Movimiento completo ("&COUNTIF({SI["mov"]},"Completo")&") — 100 % del volumen proyectado"'),
+        (AMARILLO, f'="Con intervención ("&COUNTIF({SI["mov"]},"En intervención")&") — se está trabajando"'),
+        (GRIS, f'="Sin intervención ("&COUNTIF({SI["mov"]},"Sin intervenir")&")"'),
+        ('FFFFFF', f'="⚠ Movimiento extra ("&COUNTIF({SI["extra"]},">0")&") — volumen adicional (proforma)"')]
+LEY2 = [(VERDE, f'="✅ Entregada ("&COUNTIF({SI["entr"]},"Sí")&" sitios) — acceso y living"'),
+        (ROJO, f'="⚠ Debería estar entregada ("&COUNTIF({SI["debe"]},1)&") — su fecha Gantt ya pasó"'),
+        (AMARILLO, 'En proceso de entrega'), (GRIS, 'Pendiente — aún no le toca'),
+        (CLARO, 'Fondo de patio — no se considera')]
+for c0, ley in ((2, LEY1), (9, LEY2)):
+    for k, (color, texto) in enumerate(ley):
+        r = 40 + k
+        pan.cell(r, c0).fill = relleno(color)
+        pan.cell(r, c0).border = caja
+        unir(r, c0 + 1, r, c0 + 6, texto, fuente(9), al='left')
+
+# gráficos
+unir(46, 2, 46, 28, '📈 Gráficos', fuente(13, True), al='left')
+
+
+def cm(px):
+    return px / 37.8
+
+
+g1 = BarChart()
+g1.type, g1.style, g1.title, g1.legend = 'col', 10, 'Avance por sitio (m³ retirados / proyectados)', None
+g1.y_axis.number_format, g1.y_axis.scaling.max, g1.y_axis.scaling.min = '0%', 1.2, 0
+g1.x_axis.delete = g1.y_axis.delete = False
+g1.add_data(Reference(sit, min_col=9, min_row=3, max_row=51), titles_from_data=True)
+g1.set_categories(Reference(sit, min_col=1, min_row=4, max_row=51))
+g1.series[0].graphicalProperties.solidFill = VERDE
+g1.gapWidth = 40
+g1.width, g1.height = cm(13 * 65 - 10), cm(16 * 20)
+pan.add_chart(g1, 'B47')
+
+
+def dona(titulo, col_cat, col_val, n, colores, ancla, ancho_cols):
+    g = DoughnutChart()
+    g.title, g.holeSize = titulo, 55
+    g.add_data(Reference(lis, min_col=col_val, min_row=1, max_row=1 + n), titles_from_data=True)
+    g.set_categories(Reference(lis, min_col=col_cat, min_row=2, max_row=1 + n))
+    for i, col in enumerate(colores):
+        pt = DataPoint(idx=i)
+        pt.graphicalProperties.solidFill = col
+        g.series[0].dPt.append(pt)
+    g.dataLabels = DataLabelList()
+    g.dataLabels.showVal = True
+    g.dataLabels.showSerName = g.dataLabels.showCatName = False
+    g.dataLabels.showPercent = g.dataLabels.showLegendKey = False
+    g.width, g.height = cm(ancho_cols * 65 - 10), cm(16 * 20)
+    pan.add_chart(g, ancla)
+
+
+dona('Estado del movimiento de tierra', 12, 13, 3, [VERDE, AMARILLO, GRIS], 'O47', 6)
+dona('Cumplimiento carta Gantt', 15, 16, 4, [VERDE, ROJO, '7DA7E0', GRIS], 'U47', 9)
+
+g4 = BarChart()
+g4.type, g4.style, g4.legend = 'col', 10, None
+g4.title = 'm³ a botadero por día / semana (camiones)'
+g4.x_axis.delete = g4.y_axis.delete = False
+g4.add_data(Reference(lis, min_col=7, min_row=1, max_row=15), titles_from_data=True)
+g4.set_categories(Reference(lis, min_col=6, min_row=2, max_row=15))
+g4.series[0].graphicalProperties.solidFill = AZUL
+g4.width, g4.height = cm(12 * 65 - 10), cm(16 * 20 - 10)
+pan.add_chart(g4, f'Q{13 + len(campos_sel) + 1}')
+
+# referencias a las tablas dinámicas
+unir(65, 2, 65, 28, '🔄 Desde las tablas dinámicas (se actualizan al abrir el archivo y con ↻ Actualizar)',
      fuente(13, True), al='left')
-graf = BarChart()
-graf.type = 'col'
-graf.style = 10
-graf.title = None
-graf.legend = None
-graf.y_axis.title = 'm³'
-graf.y_axis.majorGridlines = None
-graf.x_axis.delete = False
-graf.y_axis.delete = False
-graf.add_data(Reference(lis, min_col=7, min_row=1, max_row=15), titles_from_data=True)
-graf.set_categories(Reference(lis, min_col=6, min_row=2, max_row=15))
-graf.series[0].graphicalProperties.solidFill = VERDE
-graf.height, graf.width = 7, 31
-pan.add_chart(graf, f'{L(M1)}{rg + 1}')
-pan.freeze_panes = None
-pan.print_area = f'A1:{L(ULT + 1)}{rg + 16}'
-pan.page_setup.orientation = 'landscape'
-pan.page_setup.paperSize = pan.PAPERSIZE_A3
-pan.page_setup.fitToWidth = 1
-pan.page_setup.fitToHeight = 1
-pan.sheet_properties.pageSetUpPr.fitToPage = True
-pan.print_options.horizontalCentered = True
-pan.page_margins.left = pan.page_margins.right = 0.3
-pan.page_margins.top = pan.page_margins.bottom = 0.4
+REFS = [
+    ('m³ a botadero según tickets (todos)', '=IFERROR(GETPIVOTDATA("Total m³",\'Tablas dinámicas\'!$B$4),0)', '#,##0',
+     'Camiones por día', "'Tablas dinámicas'!B4"),
+    ('Viajes (válidos − anulados)', '=IFERROR(GETPIVOTDATA("Viajes",\'Tablas dinámicas\'!$B$4),0)', '#,##0',
+     'Camiones por día', "'Tablas dinámicas'!B4"),
+    ('m³ a botadero en planillas (todas las fechas)',
+     '=IFERROR(GETPIVOTDATA("Botadero m³",\'Tablas dinámicas\'!$K$4),0)', '#,##0', 'Planillas por fecha',
+     "'Tablas dinámicas'!K4"),
+    ('Terrazas entregadas', '=IFERROR(GETPIVOTDATA("Terrazas",\'Tablas dinámicas\'!$Q$4,"Estado","Entregada"),0)', '0',
+     'Entregas por terraza', "'Tablas dinámicas'!Q4"),
+]
+for j, t in zip((2, 9, 12), ('Indicador', 'Valor', 'Tabla dinámica')):
+    pan.cell(66, j, t).font = fuente(9, True, SUAVE)
+for k, (et, f, fmt, td, destino) in enumerate(REFS):
+    r = 67 + k
+    pan.row_dimensions[r].height = 18
+    unir(r, 2, r, 8, et, fuente(10), FONDO, al='left')
+    unir(r, 9, r, 11, f, fuente(11, True), FONDO, al='right', fmt=fmt)
+    unir(r, 12, r, 17, td, fuente(10, color=SUAVE), FONDO, al='left')
+    boton(r, 18, 19, 'Ver ▸', None, AZUL, destino=destino)
+
+# ---------------------------------------------------------------- mapas: figuras del plano
+
+cols_px = [ancho_px(w) for w in COL_W] + [64] * 40
+filas_px = [round(ALTO.get(r, 15) * 4 / 3) for r in range(1, 120)]
+grilla = dibujo.Grilla(cols_px, filas_px)
+x_caja1, x_caja2 = sum(cols_px[:1]), sum(cols_px[:8])
+ancho_caja = sum(cols_px[1:8])
+y_caja = sum(filas_px[:FILA_MAPA0 - 1])
+alto_caja = sum(filas_px[FILA_MAPA0 - 1:FILA_MAPA1])
+figs_geo = [('I_' + str(sitio_de(s['terreno'])), 'I', sitio_de(s['terreno']), '', s['puntos']) for s in GEO['sitios']]
+figs_geo += [(f'E_{s}_{CLAVE_FIG[z]}', 'E', s, CLAVE_FIG[z], zz['puntos']) for s, z, zz in ZONAS]
+max_x = max(p[0] for f in figs_geo for p in f[4])
+max_y = max(p[1] for f in figs_geo for p in f[4])
+esc = min(ancho_caja / max_x, alto_caja / max_y)
+
+
+def estado_sitio(s):
+    """Colores iniciales (mismas reglas que las fórmulas y la macro ColorearMapas, al día de hoy)."""
+    filas = [m for m in MOV if m[1] == s]
+    proy_ = sum(m[4] for m in filas if m[4] > 0)
+    bot = sum(m[5] for m in filas if m[4] > 0)
+    extra = sum(m[5] for m in filas if m[4] == 0)
+    cod = 1 if proy_ > 0 and bot >= 0.99 * proy_ else 2 if bot + extra > 0 else 3
+    t_ent = {z: est for (ss, z, est, *_) in ENT if ss == s}
+    entregado = all(t_ent.get(k) == 'Entregada' for k in (('Acceso', 'Living') if isinstance(s, int) else ('Única',)))
+    fin = max((g[2] for g in GAN if g[0] == s), default=None)
+    return cod, extra > 0, entregado, bool(fin and HOY > fin and not entregado), t_ent
+
+
+figs = []
+for k, (nom, mapa, s, terr, pts) in enumerate(figs_geo):
+    cod, extra, entregado, debe, t_ent = estado_sitio(s)
+    x0 = (x_caja1 if mapa == 'I' else x_caja2) + (ancho_caja - max_x * esc) / 2
+    pts_px = [(x0 + x * esc, y_caja + y * esc) for x, y in pts]
+    if mapa == 'I':
+        color, texto = {1: VERDE, 2: AMARILLO, 3: GRIS}[cod], f'{s}' + (' ⚠' if extra else '')
+    else:
+        est = t_ent.get(TERRAZA[{'fondo': 'fondo_patio'}.get(terr, terr)])
+        color = CLARO if terr == 'fondo' else VERDE if est == 'Entregada' else ROJO if debe else \
+            AMARILLO if est == 'En proceso' else GRIS
+        texto = (f'{s}' + (' ✅' if entregado else ' ⚠' if debe else '')) if terr in ('living', 'unica') else None
+    figs.append(dibujo.figura(grilla, 2000 + k, nom, pts_px, color, texto, macro='ClicMapa'))
+
+# ---------------------------------------------------------------- Geometría (figuras del plano, desde el DXF)
+
+titulo_hoja(geo, 'Geometría del plano (figuras de los mapas)',
+            'Extraída del DXF. "📐 Importar DXF" lee un plano con polilíneas cerradas: capas 1…48 = sitios; Acceso, '
+            'Living y Patio = terrazas; Edificios; otras capas (calle, pasajes) se dibujan como contexto. '
+            '"✏️ Redibujar mapas" vuelve a dibujar las figuras desde esta tabla.')
+for j, (t, a) in enumerate([('Figura', 16), ('Mapa', 7), ('Sitio', 7), ('Terraza', 10), ('Capa DXF', 14),
+                            ('Puntos (m: x y;x y;…)', 120)], 1):
+    c = geo.cell(3, j, t)
+    c.font, c.fill = fuente(10, True, 'FFFFFF'), relleno(OSCURO)
+    geo.column_dimensions[L(j)].width = a
+for i, (nom, mapa, s, terr, pts) in enumerate(figs_geo, 4):
+    capa = str(s) if mapa == 'I' else {'fondo': 'Patio'}.get(terr, terr.capitalize())
+    for j, v in enumerate([nom, mapa, s, terr, capa, ';'.join(f'{x:.2f} {y:.2f}' for x, y in pts) + ';'], 1):
+        geo.cell(i, j, v).font = fuente(9)
+geo['H1'], geo['J1'] = '📐 Importar DXF', '✏️ Redibujar mapas'
+for ref, nom in (('H1', 'BtnDxfGeo'), ('J1', 'BtnRedibujar')):
+    c = geo[ref]
+    c.hyperlink = Hyperlink(ref=ref, location=f"'Geometría'!{ref}", tooltip=c.value)
+    c.font, c.fill, c.alignment = fuente(10, True, 'FFFFFF'), relleno(OSCURO), Alignment(horizontal='center')
+    nombre(wb, nom, f"'Geometría'!${ref[0]}${ref[1:]}")
+geo.column_dimensions['H'].width = geo.column_dimensions['J'].width = 18
+
+# ---------------------------------------------------------------- Tablas dinámicas
+
+titulo_hoja(tdn, 'Tablas dinámicas', 'Se actualizan al abrir el archivo y con ↻ Actualizar (o clic derecho → '
+            'Actualizar). Puede arrastrar campos, filtrar y agrupar como en cualquier tabla dinámica.')
+for c, t in (('B3', '🚚 Camiones por día'), ('G3', '📍 Camiones por sitio'), ('K3', '🧾 Planillas por fecha'),
+             ('Q3', '🏁 Entregas por terraza')):
+    tdn[c] = t
+    tdn[c].font = fuente(12, True, OSCURO)
+for col, w in zip('ABCDEFGHIJKLMNOPQRSTUV', [2, 13, 11, 9, 11, 3, 10, 11, 9, 3, 13, 13, 11, 13, 3, 3, 16, 11, 11, 11,
+                                             13, 3]):
+    tdn.column_dimensions[col].width = w
+c_cam = TD.Cache('tblCamiones', CAB_CAM, CAM, {'Fecha': 'dd-mm-yyyy', 'Semana': 'dd-mm-yyyy'})
+c_mov = TD.Cache('tblMovimiento', CAB_MOV, MOV, {'Fecha': 'dd-mm-yyyy'})
+c_ent = TD.Cache('tblEntregas', CAB_ENT, ENT)
+PIVOTES = [
+    TD.TablaDinamica('tdCamionesDia', c_cam, 'Tablas dinámicas', 'B4', 'Fecha',
+                     [('m³', 'sum', 'Total m³', 3), ('Viaje', 'sum', 'Viajes', 1), ('Camión día', 'sum', 'Camiones', 1)]),
+    TD.TablaDinamica('tdCamionesSitio', c_cam, 'Tablas dinámicas', 'G4', 'Sitio',
+                     [('m³', 'sum', 'Total m³', 3), ('Viaje', 'sum', 'Viajes', 1)]),
+    TD.TablaDinamica('tdPlanillas', c_mov, 'Tablas dinámicas', 'K4', 'Fecha',
+                     [('A botadero m³', 'sum', 'Botadero m³', 3)], columnas='Tipo'),
+    TD.TablaDinamica('tdEntregas', c_ent, 'Tablas dinámicas', 'Q4', 'Terraza', [('Sitio', 'count', 'Terrazas', 1)],
+                     columnas='Estado'),
+]
+TD.escribir({'Tablas dinámicas': tdn}, PIVOTES)
+for r in range(5, 80):
+    for c in ('B', 'K'):
+        if isinstance(tdn[f'{c}{r}'].value, (date, datetime)):
+            tdn[f'{c}{r}'].number_format = 'dd-mm-yyyy'
+    for c in ('C', 'H', 'L', 'M', 'N'):
+        tdn[f'{c}{r}'].number_format = '#,##0'
 
 # ---------------------------------------------------------------- Ficha sitio
 
 titulo_hoja(fic, 'Ficha de sitio', 'Elija el sitio en la celda amarilla (o haga clic en el mapa del Panel).')
-fic.column_dimensions['A'].width = 2
-fic.column_dimensions['B'].width = 26
-fic.column_dimensions['C'].width = 22
-fic.column_dimensions['D'].width = 3
-fic.column_dimensions['E'].width = 18
-fic.column_dimensions['F'].width = 12
-fic.column_dimensions['G'].width = 20
-fic.column_dimensions['H'].width = 70
+for col, w in zip('ABCDEFGH', [2, 26, 22, 3, 18, 12, 20, 70]):
+    fic.column_dimensions[col].width = w
 fic['B3'] = 'Sitio'
 fic['B3'].font = fuente(12, True)
 fic['C3'] = 30
-fic['C3'].font = fuente(16, True)
-fic['C3'].fill = relleno('FFF7D6')
-fic['C3'].border = caja
+fic['C3'].font, fic['C3'].fill, fic['C3'].border = fuente(16, True), relleno('FFF7D6'), caja
 fic['C3'].alignment = Alignment(horizontal='center')
 dv = DataValidation(type='list', formula1='ListaSitios', allow_blank=False)
 fic.add_data_validation(dv)
 dv.add('C3')
-fs = f'MATCH($C$3,Sitios!$A$4:$A$53,0)'
-filas_ficha = [
-    ('Datos al', f'=FechaPanel', 'dd-mm-yyyy'),
-    ('Movimiento', '=INDEX(Sitios!$K$4:$K$53,{})', None),
-    ('Avance', '=INDEX(Sitios!$I$4:$I$53,{})', '0.0%'),
-    ('Proyectado (esponjado) m³', '=INDEX(Sitios!$E$4:$E$53,{})', '#,##0'),
-    ('   Escarpe m³', '=INDEX(Sitios!$C$4:$C$53,{})', '#,##0'),
-    ('   Corte geométrico m³', '=INDEX(Sitios!$D$4:$D$53,{})', '#,##0'),
-    ('Retirado según planilla m³', '=INDEX(Sitios!$F$4:$F$53,{})', '#,##0'),
-    ('Camiones posteriores m³', '=INDEX(Sitios!$G$4:$G$53,{})', '#,##0'),
-    ('Retirado total m³', '=INDEX(Sitios!$H$4:$H$53,{})', '#,##0'),
-    ('Extra (proforma) m³', '=INDEX(Sitios!$J$4:$J$53,{})', '#,##0'),
-    ('Fecha del dato de planilla', '=INDEX(Sitios!$B$4:$B$53,{})', 'dd-mm-yyyy'),
-    ('Terraza de acceso', '=INDEX(Sitios!$L$4:$L$53,{})', None),
-    ('Terraza living', '=INDEX(Sitios!$M$4:$M$53,{})', None),
-    ('Entregado (acceso y living)', '=INDEX(Sitios!$N$4:$N$53,{})', None),
-    ('Fecha de entrega', '=INDEX(Sitios!$O$4:$O$53,{})', 'dd-mm-yyyy'),
-    ('Inicio carta Gantt', '=INDEX(Sitios!$P$4:$P$53,{})', 'dd-mm-yyyy'),
-    ('Término carta Gantt', '=INDEX(Sitios!$Q$4:$Q$53,{})', 'dd-mm-yyyy'),
-    ('Cumplimiento', '=INDEX(Sitios!$R$4:$R$53,{})', None),
-]
-for i, (et, f, fmt) in enumerate(filas_ficha, 5):
+fs = 'MATCH($C$3,Sitios!$A$4:$A$53,0)'
+for i, (et, col, fmt) in enumerate([
+        ('Movimiento', 'K', None), ('Avance', 'I', '0.0%'), ('Proyectado (esponjado) m³', 'E', '#,##0'),
+        ('   Escarpe m³', 'C', '#,##0'), ('   Corte geométrico m³', 'D', '#,##0'),
+        ('Retirado según planilla m³', 'F', '#,##0'), ('Camiones posteriores m³', 'G', '#,##0'),
+        ('Retirado total m³', 'H', '#,##0'), ('Extra (proforma) m³', 'J', '#,##0'),
+        ('Fecha del dato de planilla', 'B', 'dd-mm-yyyy'), ('Terraza de acceso', 'L', None),
+        ('Terraza living', 'M', None), ('Entregado (acceso y living)', 'N', None), ('Fecha de entrega', 'O', 'dd-mm-yyyy'),
+        ('Inicio carta Gantt', 'P', 'dd-mm-yyyy'), ('Término carta Gantt', 'Q', 'dd-mm-yyyy'),
+        ('Cumplimiento', 'R', None)], 5):
     fic.cell(i, 2, et).font = fuente(10, True, SUAVE)
-    c = fic.cell(i, 3, f'=IFERROR({f[1:].format(fs)},"")' if '{}' in f else f)
-    c.font = fuente(11, i in (6, 7, 22))
-    c.alignment = Alignment(horizontal='left')
-    c.border = Border(bottom=delgado)
+    c = fic.cell(i, 3, f'=IFERROR(INDEX(Sitios!${col}$4:${col}$53,{fs}),"")')
+    c.font, c.alignment, c.border = fuente(11, i in (5, 6, 21)), Alignment(horizontal='left'), Border(bottom=delgado)
     if fmt:
         c.number_format = fmt
-for k, (txt, bg) in enumerate([('Completo', VERDE), ('En intervención', AMARILLO), ('Atrasado', ROJO),
-                               ('Entregado', VERDE)]):
-    fic.conditional_formatting.add('C6:C22', FormulaRule(formula=[f'LEFT(C6,{len(txt)})="{txt}"'], fill=relleno(bg)))
+for txt, bg in (('Completo', VERDE), ('En intervención', AMARILLO), ('Atrasado', ROJO), ('Entregado', VERDE)):
+    fic.conditional_formatting.add('C5:C21', FormulaRule(formula=[f'LEFT(C5,{len(txt)})="{txt}"'], fill=relleno(bg)))
 fic['E3'] = 'Notas 📌 (más recientes primero)'
 fic['E3'].font = fuente(12, True)
-celda_btn = fic['E4']
-celda_btn.value = '📌 Agregar nota'
-celda_btn.fill = relleno('B07A1F')
-celda_btn.alignment = Alignment(horizontal='center')
-celda_btn.hyperlink = Hyperlink(ref='E4', location="'Ficha sitio'!E4", tooltip='Agregar nota')
-fic['E4'].font = fuente(10, True, 'FFFFFF')
-nombre(wb, 'BtnNotaFicha', "'Ficha sitio'!$E$4")
-fic['G4'] = '◀ Volver al Panel'
-fic['G4'].fill = relleno('2F5D4A')
-fic['G4'].alignment = Alignment(horizontal='center')
-fic['G4'].hyperlink = Hyperlink(ref='G4', location="'Panel'!A1", tooltip='Volver al Panel')
-fic['G4'].font = fuente(10, True, 'FFFFFF')
+boton(4, 5, 5, '📌 Agregar nota', 'BtnNotaFicha', OCRE, ws=fic)
+boton(4, 7, 7, '◀ Volver al Panel', None, OSCURO, destino="'Panel'!A1", ws=fic)
 for j, t in zip('EFGH', ['Fecha y hora', '', 'Responsable', 'Nota']):
     fic[f'{j}6'] = t
-    fic[f'{j}6'].font = fuente(10, True, 'FFFFFF')
-    fic[f'{j}6'].fill = relleno('2F5D4A')
+    fic[f'{j}6'].font, fic[f'{j}6'].fill = fuente(10, True, 'FFFFFF'), relleno(OSCURO)
 fic.merge_cells('E6:F6')
 for k in range(1, 16):
     r = k + 6
-    fila_nota = f'_xlfn.AGGREGATE(14,6,ROW({NT["sitio"]})/({NT["sitio"]}=$C$3),{k})'
+    fila_nota = f'_xlfn.AGGREGATE(14,6,(ROW(tblNotas[Sitio])-ROW(tblNotas[#Headers]))/(tblNotas[Sitio]=$C$3),{k})'
     fic.merge_cells(f'E{r}:F{r}')
-    fic[f'E{r}'] = f'=IFERROR(INDEX(Notas!$A:$A,{fila_nota}),"")'
+    fic[f'E{r}'] = f'=IFERROR(INDEX(tblNotas[Fecha y hora],{fila_nota}),"")'
     fic[f'E{r}'].number_format = 'dd-mm-yyyy hh:mm'
-    fic[f'G{r}'] = f'=IFERROR(INDEX(Notas!$C:$C,{fila_nota}),"")'
-    fic[f'H{r}'] = f'=IFERROR(INDEX(Notas!$D:$D,{fila_nota}),"")'
+    fic[f'G{r}'] = f'=IFERROR(INDEX(tblNotas[Responsable],{fila_nota}),"")'
+    fic[f'H{r}'] = f'=IFERROR(INDEX(tblNotas[Nota],{fila_nota}),"")'
     fic[f'H{r}'].alignment = Alignment(wrap_text=True, vertical='top')
     for j in 'EGH':
         fic[f'{j}{r}'].border = Border(bottom=delgado)
 
 # ---------------------------------------------------------------- Programa (carta Gantt dibujada)
 
-titulo_hoja(pro, 'Programa — carta Gantt por sitio', '')
-pro['A2'] = (f'="Barra = semanas del programa de cada sitio · verde = entregado · rojo = atrasado · azul = pendiente '
-             f'· columna roja = semana del "&{fecha_txt("FechaPanel")}')
+titulo_hoja(pro, 'Programa — carta Gantt por sitio')
+pro['A2'] = (f'="Barra = semanas del programa · verde = entregado · rojo = atrasado · azul = pendiente · columna '
+             f'rosada = semana del "&{fecha_txt("FechaPanel")}')
 pro['A2'].font = fuente(10, color=SUAVE, cursiva=True)
 SEMANAS = 30
-for j, (t, a) in enumerate([('Sitio', 7), ('Inicio', 11), ('Término', 11), ('Entregado', 10), ('Cumplimiento', 19)],
-                           1):
+for j, (t, a) in enumerate([('Sitio', 7), ('Inicio', 11), ('Término', 11), ('Entregado', 10), ('Cumplimiento', 19)], 1):
     c = pro.cell(4, j, t)
-    c.font = fuente(10, True, 'FFFFFF')
-    c.fill = relleno('2F5D4A')
+    c.font, c.fill = fuente(10, True, 'FFFFFF'), relleno(OSCURO)
     c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     pro.column_dimensions[L(j)].width = a
 pro.row_dimensions[4].height = 34
 for k in range(SEMANAS):
-    c = pro.cell(4, 6 + k, f'=MIN({GT["ini"]})-WEEKDAY(MIN({GT["ini"]}),2)+1+7*{k}')
-    c.number_format = 'dd-mm'
-    c.font = fuente(8, True, 'FFFFFF')
-    c.fill = relleno('2F5D4A')
+    c = pro.cell(4, 6 + k, f'=MIN(tblGantt[Inicio])-WEEKDAY(MIN(tblGantt[Inicio]),2)+1+7*{k}')
+    c.number_format, c.font, c.fill = 'dd-mm', fuente(8, True, 'FFFFFF'), relleno(OSCURO)
     c.alignment = Alignment(text_rotation=90, horizontal='center')
     pro.column_dimensions[L(6 + k)].width = 3.2
 for i, s in enumerate(TERRENOS[:48], 5):
     fr = FILA_SITIO[s]
     for j, col in enumerate(['A', 'P', 'Q', 'N', 'R'], 1):
         c = pro.cell(i, j, f'=Sitios!{col}{fr}')
-        c.alignment = Alignment(horizontal='center')
-        c.font = fuente(9, j == 1)
+        c.alignment, c.font = Alignment(horizontal='center'), fuente(9, j == 1)
         c.border = Border(bottom=Side(style='hair', color=BORDE))
     pro.cell(i, 2).number_format = pro.cell(i, 3).number_format = 'dd-mm-yyyy'
     for k in range(SEMANAS):
         pro.cell(i, 6 + k).border = Border(bottom=Side(style='hair', color=BORDE), left=Side(style='hair', color=BORDE))
-ultg = 4 + 48
-area = f'F5:{L(5 + SEMANAS)}{ultg}'
+ULTG = 4 + 48
+area = f'F5:{L(5 + SEMANAS)}{ULTG}'
 barra = 'AND($B5<>"",F$4<=$C5,F$4+6>=$B5)'
 for cond, color in ((f'AND({barra},$D5="Sí")', VERDE), (f'AND({barra},$E5="Atrasado")', ROJO), (barra, '7DA7E0'),
                     ('AND(F$4<=FechaPanel,FechaPanel<F$4+7)', 'F6D5D5')):
     pro.conditional_formatting.add(area, FormulaRule(formula=[cond], fill=relleno(color), stopIfTrue=True))
 for txt, bg in (('Atrasado', ROJO), ('Entregado', VERDE)):
-    pro.conditional_formatting.add(f'E5:E{ultg}', FormulaRule(formula=[f'LEFT(E5,{len(txt)})="{txt}"'],
+    pro.conditional_formatting.add(f'E5:E{ULTG}', FormulaRule(formula=[f'LEFT(E5,{len(txt)})="{txt}"'],
                                                              fill=relleno(bg), font=Font(color='FFFFFF', bold=True)))
 pro.freeze_panes = 'F5'
 
@@ -791,73 +816,76 @@ pro.freeze_panes = 'F5'
 
 ayu.column_dimensions['A'].width = 2
 ayu.column_dimensions['B'].width = 120
-textos = [
-    ('Cómo usar este archivo', 'titulo'),
-    ('Panel (primera hoja): elija el día en la celda amarilla "Ver al día" (o use ◀ Anterior / Hoy / Siguiente ▶) y '
-     'la vista Día o Semana. Todo se recalcula solo: indicadores, mapas, ficha y gráfico.', ''),
-    ('Los datos se escriben en las hojas amarillas. No hay que tocar las hojas Panel, Ficha sitio, Programa ni Sitios '
-     '(son de cálculo).', ''),
-    ('Hojas de datos', 'sub'),
-    ('• Movimiento: la planilla "Resumen x Terraza" (una fila por sitio y fecha). Botón "📥 Planilla de movimiento" '
-     'del Panel: elige el archivo Excel de la planilla, pregunta la fecha y copia las filas (si ya había datos de esa '
-     'fecha los reemplaza). Para cada sitio se usa el dato más reciente hasta el día del Panel, así que no se suma con '
-     'lo anterior. Filas sin presupuesto (esponjado 0) o "EXC ADICIONAL" = extra (proforma, no entra al avance).', ''),
-    ('• Camiones: tickets de la máquina. Botón "📥 Tickets de camiones (CSV)": elige el CSV (TICKET;FECHA;HORA;'
-     'PATENTE;VOLUMEN_M3;SECTOR;TIPO;ESTADO) y agrega solo los tickets nuevos. Solo cuentan para un sitio los '
-     'sectores que son un número de sitio (1 a 48); los demás (pasajes, calle, P3, R…) quedan como generales. Los m³ '
-     'de camiones de un sitio se suman a su avance solo si son posteriores a la fecha de su planilla.', ''),
-    ('• Entregas: estado de cada terraza (Pendiente / En proceso / Entregada) y fecha de entrega. Un sitio está '
-     'entregado cuando su acceso y su living están entregados (el fondo de patio no cuenta).', ''),
-    ('• Gantt: inicio y término del programa de cada sitio. Si el término ya pasó y el sitio no está entregado, '
-     'aparece como atrasado (rojo / ⚠).', ''),
-    ('• Notas: bitácora por sitio (fecha y hora, responsable, nota). Botón "📌 Agregar nota".', ''),
-    ('Reglas', 'sub'),
-    ('• Avance de movimiento de tierra = m³ retirados / m³ proyectados (esponjados). No depende de la carta Gantt.', ''),
-    ('• Mapa de intervención: verde = 100 % del volumen proyectado (desde 99 %, por redondeo de la planilla); '
-     'amarillo = con intervención; gris = sin intervención; ⚠ = movimiento extra.', ''),
-    ('• Mapa de entregas: ✅ entregada; rojo / ⚠ = debería estar entregada según la carta Gantt; amarillo = en proceso '
-     'de entrega; gris = pendiente; muy claro = fondo de patio (no se considera).', ''),
-    ('Macros', 'sub'),
-    ('Los botones, el clic en los mapas y las importaciones usan macros. Al abrir, presione "Habilitar contenido" '
-     '(Windows) o "Habilitar macros" (Mac). Si Windows dice que las macros están bloqueadas porque el archivo viene de '
-     'internet: cierre Excel, clic derecho sobre el archivo → Propiedades → marque "Desbloquear" → Aceptar.', ''),
-    ('Sin macros todo lo demás funciona igual: cambie el día escribiendo en la celda amarilla, y pegue los datos '
-     'directamente en las hojas amarillas.', ''),
-    ('Límites', 'sub'),
-    (f'Las hojas de datos están preparadas para {MAX_MOV:,} filas de movimiento, {MAX_CAM:,} tickets (el botón de '
-     f'importación extiende las fórmulas si se necesitan más), {MAX_ENT} terrazas, {MAX_GANTT} filas de Gantt y '
-     f'{MAX_NOTAS:,} notas. Requiere Excel 2010 o posterior (Windows o Mac).'.replace(',', '.'), ''),
+TEXTOS = [
+    ('Cómo usar este archivo', 't'),
+    ('Panel: elija el día ("Ver al día", o ◀ Hoy ▶) y la vista Día o Semana. Los indicadores, los mapas, los gráficos y '
+     'el detalle del sitio se recalculan. Clic en un sitio de cualquier mapa = su detalle a la derecha.', ''),
+    ('Para sumar información: escriba o pegue en las hojas amarillas (son tablas de Excel: crecen solas al escribir '
+     'debajo) o use los botones 📥 del Panel. Luego ↻ Actualizar: se actualizan las tablas dinámicas, los gráficos y '
+     'los colores de los mapas (también al abrir el archivo y al volver al Panel).', ''),
+    ('Hojas de datos', 's'),
+    ('• Movimiento: planilla "Resumen x Terraza" (una fila por sitio y fecha). Botón "📥 Planilla movimiento": elige el '
+     'Excel de la planilla tal cual viene, pregunta la fecha y reemplaza los datos de esa fecha. Para cada sitio se '
+     'usa la fecha más reciente hasta el día del Panel (no se suma con lo anterior). Filas sin presupuesto o "EXC '
+     'ADICIONAL" = extra (proforma).', ''),
+    ('• Camiones: tickets de la máquina. Botón "📥 Tickets (CSV)": agrega solo los tickets nuevos. Solo cuentan para '
+     'un sitio los sectores que son un número de sitio (1 a 48); los demás quedan como generales. Los m³ de camiones '
+     'de un sitio se suman a su avance solo si son posteriores a la fecha de su planilla.', ''),
+    ('• Entregas: estado de cada terraza y fecha de entrega. Gantt: inicio y término por sitio. Notas: bitácora.', ''),
+    ('Plano (hoja Geometría)', 's'),
+    ('Las figuras de los mapas vienen del DXF del proyecto. "📐 Plano DXF" lee un DXF con polilíneas cerradas: capas '
+     '1…48 = sitios; Acceso, Living, Patio = terrazas (se asignan al sitio que las contiene); Edificios; cualquier otra '
+     'capa (calle, tramos, pasajes) se dibuja como contexto con el nombre de la capa. Luego redibuja los dos mapas.', ''),
+    ('Reglas', 's'),
+    ('• Avance = m³ retirados / m³ proyectados (esponjados); no depende de la carta Gantt. Verde = 100 % (desde 99 %).', ''),
+    ('• Un sitio cumple la carta Gantt cuando su acceso y su living están entregados; si su término ya pasó y no están '
+     'entregados, aparece en rojo / ⚠.', ''),
+    ('Macros', 's'),
+    ('Al abrir, presione "Habilitar contenido" (Windows) o "Habilitar macros" (Mac). Si Windows bloquea las macros '
+     'porque el archivo viene de internet: cierre Excel, clic derecho en el archivo → Propiedades → "Desbloquear". '
+     'Sin macros todo se calcula igual, pero los mapas no cambian de color, no responden al clic y los botones no '
+     'funcionan. Requiere Excel 2013 o posterior (Windows o Mac).', ''),
 ]
-for i, (t, tipo) in enumerate(textos, 2):
+for i, (t, tipo) in enumerate(TEXTOS, 2):
     c = ayu.cell(i, 2, t)
-    c.font = fuente(16, True) if tipo == 'titulo' else fuente(12, True, '2F5D4A') if tipo == 'sub' else fuente(11)
+    c.font = fuente(16, True) if tipo == 't' else fuente(12, True, OSCURO) if tipo == 's' else fuente(11)
     c.alignment = Alignment(wrap_text=True, vertical='top')
     if not tipo:
-        ayu.row_dimensions[i].height = 15 * max(1, len(t) // 115 + 1)
+        ayu.row_dimensions[i].height = 15 * (len(t) // 115 + 1)
 
-# impresión: horizontal, ajustada al ancho de la página
-for ws in (fic, pro, sit):
+# ---------------------------------------------------------------- impresión
+
+pan.print_area = 'A1:AB71'
+for ws in (pan, fic, pro, sit, tdn):
     ws.page_setup.orientation = 'landscape'
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0
+    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_margins.left = ws.page_margins.right = 0.3
-fic.print_area = 'A1:H22'
-pro.print_area = f'A1:{L(5 + SEMANAS)}{ultg}'
-sit.print_area = f'A1:S{r_tot}'
+pan.page_setup.paperSize = pan.PAPERSIZE_A3
+pan.page_setup.fitToHeight = 1
+fic.print_area, pro.print_area, sit.print_area = 'A1:H21', f'A1:{L(5 + SEMANAS)}{ULTG}', f'A1:S{R_TOT}'
 
-# ---------------------------------------------------------------- guardar con macros
+# ---------------------------------------------------------------- guardar: figuras, tablas dinámicas y macros
 
 wb.active = 0
 SALIDA.parent.mkdir(parents=True, exist_ok=True)
-tmp = SALIDA.with_suffix('.tmp.xlsx')
-wb.save(tmp)
+t1, t2, t3 = (SALIDA.with_suffix(f'.tmp{i}.xlsx') for i in (1, 2, 3))
+wb.save(t1)
+hojas_xml = {ws.title: f'xl/worksheets/sheet{i}.xml' for i, ws in enumerate(wb.worksheets, 1)}
+dibujo.agregar(t1, hojas_xml['Panel'], figs, t2)
+TD.empaquetar(t2, t3, PIVOTES, {'Tablas dinámicas': hojas_xml['Tablas dinámicas']})
 vba = Path(__file__).parent / 'vba'
-modulos = [('ThisWorkbook', 'libro', '')]
-for _, codigo in orden:
-    archivo = vba / f'{codigo}.cls'
-    modulos.append((codigo, 'hoja', archivo.read_text(encoding='utf-8') if archivo.exists() else ''))
+
+
+def codigo(nombre_mod):
+    p = vba / f'{nombre_mod}.cls'
+    return p.read_text(encoding='utf-8') if p.exists() else ''
+
+
+modulos = [('ThisWorkbook', 'libro', codigo('ThisWorkbook'))]
+modulos += [(c, 'hoja', codigo(c)) for _, c in orden]
 modulos.append(('Botones', 'modulo', (vba / 'Botones.bas').read_text(encoding='utf-8')))
-xlsm.empaquetar(tmp, SALIDA, vba_proyecto.proyecto(modulos))
-tmp.unlink()
-print(SALIDA)
+xlsm.empaquetar(t3, SALIDA, vba_proyecto.proyecto(modulos))
+for t in (t1, t2, t3):
+    t.unlink()
+print(SALIDA, f'{SALIDA.stat().st_size / 1024:.0f} KB')

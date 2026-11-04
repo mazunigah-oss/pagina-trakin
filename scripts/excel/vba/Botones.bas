@@ -1,9 +1,10 @@
 Option Explicit
-Private Const MAX_MOV As Long = 5000   ' filas de datos de la hoja Movimiento (A4:H5003)
+Private Const MAX_POL As Long = 3000    ' polígonos que se leen de un DXF
+Private Const MAX_PTS As Long = 20000   ' vértices por polígono
 ' Macros del archivo de seguimiento de movimiento de tierra (Loma La Cruz).
 ' Funcionan en Excel para Windows y Mac (sin librerías externas).
 
-' ------------------------------------------------------------ fecha y vista
+' ------------------------------------------------------------ fecha, vista y actualización
 
 Public Sub DiaAnterior()
     MoverDia -1
@@ -20,14 +21,21 @@ Private Sub MoverDia(ByVal signo As Long)
     If CStr(ThisWorkbook.Names("Vista").RefersToRange.Value) = "Semana" Then paso = 7
     d = c.Value
     c.Value = DateSerial(Year(d), Month(d), Day(d) + signo * paso)
+    ColorearMapas
 End Sub
 
 Public Sub IrHoy()
     ThisWorkbook.Names("FechaPanel").RefersToRange.Formula = "=TODAY()"
+    ColorearMapas
 End Sub
 
 Public Sub Actualizar()
-    Recalcular
+    ' tablas dinámicas + fórmulas + colores de los mapas
+    On Error Resume Next
+    ThisWorkbook.RefreshAll
+    Application.CalculateFull
+    On Error GoTo 0
+    ColorearMapas
     Application.StatusBar = "Datos actualizados a las " & Format(Now, "hh:mm")
 End Sub
 
@@ -35,16 +43,75 @@ Public Sub VerFicha()
     Ficha.Activate
 End Sub
 
-Public Sub VolverPanel()
-    Panel.Activate
+Public Sub VerTablasDinamicas()
+    TablasDin.Activate
 End Sub
 
-Public Sub SeleccionarSitio(ByVal idx As Long)
-    ' idx = fila del sitio en la hoja Sitios (1 = sitio 1 ... 50 = ED-2)
-    If idx < 1 Or idx > 50 Then Exit Sub
-    Ficha.Range("C3").Value = Sitios.Cells(idx + 3, 1).Value
-    Application.StatusBar = "Sitio seleccionado: " & Sitios.Cells(idx + 3, 1).Value & _
-        "  (detalle abajo en el Panel o en la hoja Ficha sitio)"
+' ------------------------------------------------------------ mapas (figuras I_<sitio> y E_<sitio>_<terraza>)
+
+Public Sub ColorearMapas()
+    Dim sh As Shape, p() As String, fila As Variant, sel As String, sitio As Variant
+    Dim verde As Long, amarillo As Long, gris As Long, claro As Long, rojo As Long, est As String
+    verde = RGB(47, 158, 107): amarillo = RGB(251, 224, 140): gris = RGB(207, 214, 209)
+    claro = RGB(241, 243, 240): rojo = RGB(224, 102, 102)
+    On Error Resume Next
+    Application.Calculate
+    sel = CStr(Ficha.Range("C3").Value)
+    For Each sh In Panel.Shapes
+        p = Split(sh.Name, "_")
+        If UBound(p) >= 1 And (p(0) = "I" Or p(0) = "E") Then
+            If IsNumeric(p(1)) Then sitio = CLng(p(1)) Else sitio = p(1)
+            fila = Application.Match(sitio, Sitios.Range("A4:A53"), 0)
+            If Not IsError(fila) Then
+                fila = fila + 3
+                If p(0) = "I" Then
+                    Select Case Sitios.Cells(fila, 20).Value   ' código: 1 completo, 2 con intervención, 3 sin intervenir
+                        Case 1: sh.Fill.ForeColor.RGB = verde
+                        Case 2: sh.Fill.ForeColor.RGB = amarillo
+                        Case Else: sh.Fill.ForeColor.RGB = gris
+                    End Select
+                    sh.TextFrame.Characters.Text = CStr(Sitios.Cells(fila, 22).Value)
+                Else
+                    If UBound(p) >= 2 Then
+                        If p(2) = "fondo" Then
+                            sh.Fill.ForeColor.RGB = claro
+                        Else
+                            If p(2) = "living" Then est = Sitios.Cells(fila, 13).Value Else est = Sitios.Cells(fila, 12).Value
+                            If est = "Entregada" Then
+                                sh.Fill.ForeColor.RGB = verde
+                            ElseIf Sitios.Cells(fila, 21).Value = 1 Then
+                                sh.Fill.ForeColor.RGB = rojo
+                            ElseIf est = "En proceso" Then
+                                sh.Fill.ForeColor.RGB = amarillo
+                            Else
+                                sh.Fill.ForeColor.RGB = gris
+                            End If
+                            If p(2) = "living" Or p(2) = "unica" Then
+                                sh.TextFrame.Characters.Text = CStr(Sitios.Cells(fila, 23).Value)
+                            End If
+                        End If
+                    End If
+                End If
+                ' sitio seleccionado: borde oscuro en ambos mapas
+                If CStr(Sitios.Cells(fila, 1).Value) = sel Then
+                    sh.Line.ForeColor.RGB = RGB(29, 35, 32): sh.Line.Weight = 2
+                Else
+                    sh.Line.ForeColor.RGB = RGB(255, 255, 255): sh.Line.Weight = 0.75
+                End If
+            End If
+        End If
+    Next sh
+End Sub
+
+Public Sub ClicMapa()
+    ' se ejecuta al hacer clic en una figura del mapa
+    Dim p() As String
+    On Error Resume Next
+    p = Split(CStr(Application.Caller), "_")
+    If UBound(p) < 1 Then Exit Sub
+    If IsNumeric(p(1)) Then Ficha.Range("C3").Value = CLng(p(1)) Else Ficha.Range("C3").Value = p(1)
+    ColorearMapas
+    Application.StatusBar = "Sitio seleccionado: " & p(1) & " (detalle a la derecha de los mapas)"
 End Sub
 
 ' ------------------------------------------------------------ importar tickets de la máquina (CSV)
@@ -54,16 +121,17 @@ Public Sub ImportarCamiones()
     ruta = Application.GetOpenFilename()
     If VarType(ruta) = vbBoolean Then Exit Sub
     res = ImportarCamionesDesde(CStr(ruta))
+    Actualizar
     MsgBox res, IIf(Left$(res, 2) = "No", vbExclamation, vbInformation), "Tickets de camiones"
 End Sub
 
 Public Function ImportarCamionesDesde(ByVal ruta As String) As String
-    ' agrega los tickets nuevos del CSV de la máquina; devuelve el resumen
-    Dim texto As String, lineas() As String, sep As String
-    Dim cab() As String, i As Long, j As Long, campos() As String
+    ' agrega los tickets nuevos del CSV de la máquina a la tabla tblCamiones; devuelve el resumen
+    Dim texto As String, lineas() As String, sep As String, lo As ListObject, fila As Range
+    Dim cab() As String, i As Long, j As Long, campos() As String, v As Variant
     Dim cTicket As Long, cFecha As Long, cHora As Long, cPatente As Long, cVol As Long
     Dim cSector As Long, cTipo As Long, cEstado As Long, cEmpresa As Long
-    Dim fila As Long, nuevos As Long, repetidos As Long, malos As Long, generales As Long
+    Dim nuevos As Long, repetidos As Long, malos As Long, generales As Long
     Dim existentes As New Collection, clave As String, f As Variant, sector As String, estado As String
 
     texto = Replace(LeerTexto(ruta), vbCr, "")
@@ -92,17 +160,17 @@ Public Function ImportarCamionesDesde(ByVal ruta As String) As String
         Exit Function
     End If
 
-    ' tickets ya cargados (ticket + estado)
-    fila = UltimaFila(Camiones, 1)
-    On Error Resume Next
-    For i = 4 To fila
-        existentes.Add 1, CStr(Camiones.Cells(i, 1).Value) & "|" & UCase(CStr(Camiones.Cells(i, 9).Value))
-    Next i
+    Set lo = Camiones.ListObjects("tblCamiones")
+    On Error Resume Next   ' tickets ya cargados (ticket + estado)
+    If Not lo.DataBodyRange Is Nothing Then
+        v = lo.DataBodyRange.Value
+        For i = 1 To UBound(v, 1)
+            existentes.Add 1, CStr(v(i, 1)) & "|" & UCase(CStr(v(i, 9)))
+        Next i
+    End If
     On Error GoTo 0
-    fila = fila + 1
 
     Application.ScreenUpdating = False
-    CalculoManual True
     For i = 1 To UBound(lineas)
         If Len(Trim(lineas(i))) > 0 Then
             campos = Split(Replace(lineas(i), """", ""), sep)
@@ -117,29 +185,30 @@ Public Function ImportarCamionesDesde(ByVal ruta As String) As String
                     repetidos = repetidos + 1
                 Else
                     existentes.Add 1, clave
-                    Camiones.Cells(fila, 1).Value = Campo(campos, cTicket)
-                    Camiones.Cells(fila, 2).Value = f
-                    Camiones.Cells(fila, 3).Value = Campo(campos, cHora)
-                    Camiones.Cells(fila, 4).Value = UCase(Campo(campos, cPatente))
-                    Camiones.Cells(fila, 5).Value = LeerNumero(Campo(campos, cVol))
+                    Set fila = FilaNueva(lo)
+                    fila.Cells(1, 1).NumberFormat = "@"
+                    fila.Cells(1, 1).Value = Campo(campos, cTicket)
+                    fila.Cells(1, 2).Value = f
+                    fila.Cells(1, 3).NumberFormat = "@"
+                    fila.Cells(1, 3).Value = Campo(campos, cHora)
+                    fila.Cells(1, 4).Value = UCase(Campo(campos, cPatente))
+                    fila.Cells(1, 5).Value = LeerNumero(Campo(campos, cVol))
                     sector = Campo(campos, cSector)
                     If EsSitio(sector) Then
-                        Camiones.Cells(fila, 6).Value = CLng(sector)
+                        fila.Cells(1, 6).Value = CLng(sector)
                     Else
                         generales = generales + 1
                     End If
-                    Camiones.Cells(fila, 7).Value = sector
-                    Camiones.Cells(fila, 8).Value = Campo(campos, cTipo)
-                    Camiones.Cells(fila, 9).Value = estado
-                    Camiones.Cells(fila, 10).Value = Campo(campos, cEmpresa)
-                    fila = fila + 1
+                    fila.Cells(1, 7).NumberFormat = "@"
+                    fila.Cells(1, 7).Value = sector
+                    fila.Cells(1, 8).Value = Campo(campos, cTipo)
+                    fila.Cells(1, 9).Value = estado
+                    fila.Cells(1, 10).Value = Campo(campos, cEmpresa)
                     nuevos = nuevos + 1
                 End If
             End If
         End If
     Next i
-    ExtenderFormulas fila
-    CalculoManual False
     Application.ScreenUpdating = True
     ImportarCamionesDesde = nuevos & " tickets agregados." & vbLf & _
         IIf(repetidos > 0, repetidos & " ya estaban cargados (no se repiten)." & vbLf, "") & _
@@ -147,20 +216,16 @@ Public Function ImportarCamionesDesde(ByVal ruta As String) As String
         IIf(malos > 0, malos & " filas sin ticket o con fecha no reconocida (se omitieron).", "")
 End Function
 
-Private Function UltimaFila(ByVal h As Worksheet, ByVal col As Long) As Long
-    ' última fila con datos (los títulos ocupan hasta la fila 3)
-    UltimaFila = h.Cells(h.Rows.Count, col).End(xlUp).Row
-    If UltimaFila < 3 Then UltimaFila = 3
-End Function
-
-Private Sub ExtenderFormulas(ByVal ultima As Long)
-    ' las columnas automáticas K:L vienen hasta la fila 5000; si hay más tickets se copian hacia abajo
-    Dim hasta As Long
-    hasta = UltimaFila(Camiones, 11)
-    If ultima > hasta Then
-        Camiones.Range(Camiones.Cells(hasta, 11), Camiones.Cells(ultima + 500, 12)).FillDown
+Private Function FilaNueva(ByVal lo As ListObject) As Range
+    ' fila nueva al final de la tabla (si la tabla solo tiene una fila vacía, se usa esa)
+    If lo.ListRows.Count = 1 Then
+        If Application.WorksheetFunction.CountA(lo.ListRows(1).Range) = 0 Then
+            Set FilaNueva = lo.ListRows(1).Range
+            Exit Function
+        End If
     End If
-End Sub
+    Set FilaNueva = lo.ListRows.Add.Range
+End Function
 
 Private Function EsSitio(ByVal s As String) As Boolean
     Dim k As Long
@@ -191,27 +256,33 @@ Public Sub ImportarPlanilla()
                   "¿Reemplazarlas por las de esta planilla?", vbYesNo + vbQuestion) = vbNo Then Exit Sub
     End If
     res = ImportarPlanillaDesde(CStr(ruta), CDate(f))
+    Actualizar
     MsgBox res, IIf(Left$(res, 2) = "No", vbExclamation, vbInformation), "Planilla de movimiento"
 End Sub
 
 Private Function FilasConFecha(ByVal f As Date) As Long
-    Dim i As Long, v As Variant
-    v = Movimiento.Range("A4:A" & (MAX_MOV + 3)).Value
-    For i = 1 To MAX_MOV
+    Dim lo As ListObject, i As Long, v As Variant
+    Set lo = Movimiento.ListObjects("tblMovimiento")
+    If lo.DataBodyRange Is Nothing Then Exit Function
+    v = lo.ListColumns(1).DataBodyRange.Value
+    If Not IsArray(v) Then
+        If SerieFecha(v) = CLng(f) Then FilasConFecha = 1
+        Exit Function
+    End If
+    For i = 1 To UBound(v, 1)
         If SerieFecha(v(i, 1)) = CLng(f) Then FilasConFecha = FilasConFecha + 1
     Next i
 End Function
 
 Public Function ImportarPlanillaDesde(ByVal ruta As String, ByVal f As Date) As String
-    ' copia la planilla "Resumen x Terraza" a la hoja Movimiento con la fecha f (reemplaza las filas de esa fecha)
-    Dim wb As Workbook, ws As Worksheet, h As Worksheet
-    Dim r As Long, c As Long, filaCab As Long, t As String, i As Long, ultima As Long, fila As Long
+    ' copia la planilla "Resumen x Terraza" a la tabla tblMovimiento con la fecha f (reemplaza las filas de esa fecha)
+    Dim wb As Workbook, ws As Worksheet, h As Worksheet, lo As ListObject, fila As Range
+    Dim r As Long, c As Long, filaCab As Long, t As String, i As Long, ultima As Long, k As Long
     Dim cSitio As Long, cEsc As Long, cCorte As Long, cEsp As Long, cBot As Long
     Dim sitio As Variant, esc As Double, corte As Double, esp As Double, bot As Double
-    Dim n As Long, extra As Double, total As Double
+    Dim n As Long, extra As Double, total As Double, datos() As Double, filaTxt As String
 
-    Dim mv As Worksheet
-    Set mv = Movimiento   ' referencia tomada antes de abrir la planilla (que pasa a ser el libro activo)
+    Set lo = Movimiento.ListObjects("tblMovimiento")   ' antes de abrir la planilla (pasa a ser el libro activo)
     Application.ScreenUpdating = False
     Set wb = Workbooks.Open(ruta, UpdateLinks:=0, ReadOnly:=True)
     For Each h In wb.Worksheets
@@ -250,8 +321,7 @@ Public Function ImportarPlanillaDesde(ByVal ruta As String, ByVal f As Date) As 
         Exit Function
     End If
 
-    ' 1) leer las filas de sitios de la planilla y cerrarla
-    Dim datos() As Double, k As Long, filaTxt As String
+    ' 1) leer las filas de sitios y cerrar la planilla
     ultima = ws.Cells(ws.Rows.Count, cSitio).End(xlUp).Row
     ReDim datos(1 To ultima, 1 To 5)
     For r = filaCab + 1 To ultima
@@ -266,7 +336,11 @@ Public Function ImportarPlanillaDesde(ByVal ruta As String, ByVal f As Date) As 
                 For c = 1 To 30
                     filaTxt = filaTxt & " " & UCase(CStr(ws.Cells(r, c).Value))
                 Next c
-                If InStr(filaTxt, "ADICIONAL") > 0 Then esc = 0: corte = 0: esp = 0
+                If InStr(filaTxt, "ADICIONAL") > 0 Then
+                    esc = 0
+                    corte = 0
+                    esp = 0
+                End If
                 n = n + 1
                 datos(n, 1) = CLng(sitio): datos(n, 2) = esc: datos(n, 3) = corte: datos(n, 4) = esp: datos(n, 5) = bot
                 If esp = 0 Then extra = extra + bot Else total = total + bot
@@ -280,36 +354,20 @@ Public Function ImportarPlanillaDesde(ByVal ruta As String, ByVal f As Date) As 
         Exit Function
     End If
 
-    ' 2) reemplazar los datos de esa fecha: se trabaja sobre una copia en memoria de la hoja y se escribe de una vez
-    '    (las filas de esa fecha se vacían, sin borrarlas, para no achicar los rangos de las fórmulas)
-    Dim hoja As Variant, libres As Long
-    hoja = mv.Range("A4:H" & (MAX_MOV + 3)).Value
-    For i = 1 To MAX_MOV
-        If SerieFecha(hoja(i, 1)) = CLng(f) Then
-            For c = 1 To 8
-                hoja(i, c) = Empty
-            Next c
-        End If
-        If IsEmpty(hoja(i, 1)) Then libres = libres + 1
-    Next i
-    If libres < n Then
-        Application.ScreenUpdating = True
-        ImportarPlanillaDesde = "No queda espacio en la hoja Movimiento (" & MAX_MOV & " filas). Borre fechas antiguas."
-        Exit Function
+    ' 2) borrar las filas de esa fecha y agregar las nuevas
+    If Not lo.DataBodyRange Is Nothing Then
+        For i = lo.ListRows.Count To 1 Step -1
+            If SerieFecha(lo.ListRows(i).Range.Cells(1, 1).Value) = CLng(f) Then lo.ListRows(i).Delete
+        Next i
     End If
-    i = 1
     For k = 1 To n
-        Do While Not IsEmpty(hoja(i, 1))
-            i = i + 1
-        Loop
-        hoja(i, 1) = f
+        Set fila = FilaNueva(lo)
+        fila.Cells(1, 1).Value = f
         For c = 1 To 5
-            hoja(i, c + 1) = datos(k, c)
+            fila.Cells(1, c + 1).Value = datos(k, c)
         Next c
     Next k
-    mv.Range("A4:H" & (MAX_MOV + 3)).Value = hoja
     Application.ScreenUpdating = True
-    Recalcular
     ImportarPlanillaDesde = n & " filas cargadas con fecha " & Format(f, "dd-mm-yyyy") & "." & vbLf & _
         "m³ a botadero (presupuestado): " & Format(total, "#,##0") & vbLf & _
         "m³ extra (sin presupuesto / adicional): " & Format(extra, "#,##0") & vbLf & vbLf & _
@@ -323,7 +381,7 @@ End Function
 ' ------------------------------------------------------------ notas
 
 Public Sub AgregarNota()
-    Dim s As String, resp As String, texto As String, idx As Variant, fila As Long, sitio As Variant
+    Dim s As String, resp As String, texto As String, idx As Variant, fila As Range, sitio As Variant
     s = InputBox("Sitio (número, o ED-1 / ED-2):", "Agregar nota", CStr(Ficha.Range("C3").Value))
     If Len(Trim(s)) = 0 Then Exit Sub
     If IsNumeric(s) Then sitio = CLng(s) Else sitio = UCase(Trim(s))
@@ -336,13 +394,294 @@ Public Sub AgregarNota()
     texto = InputBox("Nota (máximo 255 caracteres; para textos más largos escriba directo en la hoja Notas):", _
                      "Agregar nota")
     If Len(Trim(texto)) = 0 Then Exit Sub
-    fila = UltimaFila(Notas, 1) + 1
-    Notas.Cells(fila, 1).Value = Now
-    Notas.Cells(fila, 2).Value = sitio
-    Notas.Cells(fila, 3).Value = Trim(resp)
-    Notas.Cells(fila, 4).Value = Trim(texto)
+    Set fila = FilaNueva(Notas.ListObjects("tblNotas"))
+    fila.Cells(1, 1).Value = Now
+    fila.Cells(1, 2).Value = sitio
+    fila.Cells(1, 3).Value = Trim(resp)
+    fila.Cells(1, 4).Value = Trim(texto)
     Ficha.Range("C3").Value = sitio
+    ColorearMapas
     MsgBox "Nota agregada al sitio " & sitio & ".", vbInformation
+End Sub
+
+' ------------------------------------------------------------ figuras desde el DXF
+
+Public Sub ImportarDXF()
+    Dim ruta As Variant, res As String
+    ruta = Application.GetOpenFilename()
+    If VarType(ruta) = vbBoolean Then Exit Sub
+    res = ImportarDXFDesde(CStr(ruta))
+    If Left$(res, 2) <> "No" Then
+        DibujarMapas
+        Panel.Activate
+    End If
+    MsgBox res, IIf(Left$(res, 2) = "No", vbExclamation, vbInformation), "Plano DXF"
+End Sub
+
+Public Function ImportarDXFDesde(ByVal ruta As String) As String
+    ' lee polilíneas cerradas (LWPOLYLINE o POLYLINE) por capa y las deja en la hoja Geometria:
+    ' capas 1..48 = sitios; Acceso, Living, Patio = terrazas (se asignan al sitio que contiene su centro);
+    ' Edificios = ED-1, ED-2...; Etapa*, rótulos y capas sin polígonos cerrados se ignoran; el resto (calle, pasajes) = otras
+    Dim lineas() As String, i As Long, cod As String, valor As String, ent As String, enVertice As Boolean
+    Dim capa As String, cerrada As Boolean, xs() As Double, ys() As Double, np As Long
+    Dim polCapa() As String, polPts() As String, nPol As Long, k As Long, j As Long
+    Dim minX As Double, minY As Double, maxX As Double, maxY As Double, f As Double, hayPts As Boolean
+
+    lineas = Split(Replace(LeerTexto(ruta), vbCr, ""), vbLf)
+    ReDim polCapa(1 To MAX_POL)
+    ReDim polPts(1 To MAX_POL)
+    ReDim xs(1 To MAX_PTS)
+    ReDim ys(1 To MAX_PTS)
+    For i = 0 To UBound(lineas) - 1 Step 2
+        cod = Trim(lineas(i)): valor = Trim(lineas(i + 1))
+        If cod = "0" Then
+            If ent = "POLYLINE" And (valor = "VERTEX") Then
+                enVertice = True
+            Else
+                If (ent = "LWPOLYLINE" Or ent = "POLYLINE") And np >= 3 Then
+                    If Not cerrada Then cerrada = (Abs(xs(1) - xs(np)) < 1 And Abs(ys(1) - ys(np)) < 1)
+                    If cerrada And nPol < MAX_POL Then
+                        nPol = nPol + 1
+                        polCapa(nPol) = capa
+                        polPts(nPol) = ""
+                        For k = 1 To np
+                            polPts(nPol) = polPts(nPol) & NumTxt(xs(k)) & " " & NumTxt(ys(k)) & ";"
+                            If Not hayPts Then
+                                minX = xs(k)
+                                maxX = xs(k)
+                                minY = ys(k)
+                                maxY = ys(k)
+                                hayPts = True
+                            End If
+                            If xs(k) < minX Then minX = xs(k)
+                            If xs(k) > maxX Then maxX = xs(k)
+                            If ys(k) < minY Then minY = ys(k)
+                            If ys(k) > maxY Then maxY = ys(k)
+                        Next k
+                    End If
+                End If
+                ent = valor: np = 0: cerrada = False: capa = "": enVertice = False
+            End If
+        ElseIf ent = "LWPOLYLINE" Or ent = "POLYLINE" Then
+            ' en POLYLINE el encabezado trae capa, banderas y un punto de elevación; los puntos son los VERTEX
+            If cod = "8" Then
+                If Not enVertice Then capa = valor
+            ElseIf cod = "70" Then
+                If Not enVertice Then cerrada = ((CLng(Val(valor)) And 1) = 1)
+            ElseIf cod = "10" Then
+                If (ent = "LWPOLYLINE" Or enVertice) And np < MAX_PTS Then
+                    np = np + 1
+                    xs(np) = Val(valor)
+                End If
+            ElseIf cod = "20" Then
+                If np > 0 And (ent = "LWPOLYLINE" Or enVertice) Then ys(np) = Val(valor)
+            End If
+        End If
+    Next i
+    If nPol = 0 Then
+        ImportarDXFDesde = "No se encontraron polilíneas cerradas en el archivo." & vbLf & _
+            "El plano debe tener los contornos como polilíneas cerradas (ver la hoja Ayuda)."
+        Exit Function
+    End If
+    ' milímetros -> metros, origen arriba a la izquierda (y hacia abajo)
+    f = 1
+    If maxX - minX > 5000 Or maxY - minY > 5000 Then f = 1000
+    Dim sitiosTxt(1 To 48) As String, ter() As String, nTer As Long, otros As Long, ed As Long, fila As Long
+    Dim pts As String, cx As Double, cy As Double, s As Long, nombreTer As String, mapaTer As String
+    For k = 1 To nPol
+        polPts(k) = Normalizar(polPts(k), minX, maxY, f)
+    Next k
+    Geometria.Range("A4:F2000").ClearContents
+    fila = 4
+    For k = 1 To nPol
+        If IsNumeric(polCapa(k)) Then
+            s = CLng(Val(polCapa(k)))
+            If s >= 1 And s <= 48 Then
+                sitiosTxt(s) = polPts(k)
+                EscribirFigura fila, "I_" & s, "I", s, "", polCapa(k), polPts(k)
+            End If
+        End If
+    Next k
+    For k = 1 To nPol
+        Select Case UCase(polCapa(k))
+            Case "ACCESO", "LIVING", "PATIO"
+                Centro polPts(k), cx, cy
+                s = 0
+                For j = 1 To 48
+                    If Len(sitiosTxt(j)) > 0 Then
+                        If DentroDe(cx, cy, sitiosTxt(j)) Then
+                            s = j
+                            Exit For
+                        End If
+                    End If
+                Next j
+                nombreTer = LCase(polCapa(k))
+                If nombreTer = "patio" Then nombreTer = "fondo"
+                If s > 0 Then
+                    EscribirFigura fila, "E_" & s & "_" & nombreTer, "E", s, nombreTer, polCapa(k), polPts(k)
+                    nTer = nTer + 1
+                Else
+                    otros = otros + 1
+                    EscribirFigura fila, "OI_" & polCapa(k) & "_" & k, "O", "", "", polCapa(k) & " (sin sitio)", polPts(k)
+                End If
+            Case "EDIFICIOS", "EDIFICIO"
+                ed = ed + 1
+                EscribirFigura fila, "I_ED-" & ed, "I", "ED-" & ed, "", polCapa(k), polPts(k)
+                EscribirFigura fila, "E_ED-" & ed & "_unica", "E", "ED-" & ed, "unica", polCapa(k), polPts(k)
+            Case Else
+                If Not IsNumeric(polCapa(k)) And Left$(UCase(polCapa(k)), 5) <> "ETAPA" Then
+                    otros = otros + 1
+                    EscribirFigura fila, "OI_" & polCapa(k) & "_" & k, "O", "", "", polCapa(k), polPts(k)
+                End If
+        End Select
+    Next k
+    s = 0
+    For j = 1 To 48
+        If Len(sitiosTxt(j)) > 0 Then s = s + 1
+    Next j
+    ImportarDXFDesde = "Plano leído: " & s & " sitios, " & nTer & " terrazas, " & ed & " edificios y " & otros & _
+        " figuras de otras capas (calle, pasajes, etc.)." & IIf(s < 48, vbLf & "Faltan sitios: revise que cada sitio " & _
+        "esté en su capa (1 a 48) como polilínea cerrada.", "")
+End Function
+
+Private Sub EscribirFigura(ByRef fila As Long, ByVal nombre As String, ByVal mapa As String, ByVal sitio As Variant, _
+                          ByVal terraza As String, ByVal capa As String, ByVal pts As String)
+    Geometria.Cells(fila, 1).Value = nombre
+    Geometria.Cells(fila, 2).Value = mapa
+    Geometria.Cells(fila, 3).Value = sitio
+    Geometria.Cells(fila, 4).Value = terraza
+    Geometria.Cells(fila, 5).Value = capa
+    Geometria.Cells(fila, 6).Value = pts
+    fila = fila + 1
+End Sub
+
+Private Function Normalizar(ByVal pts As String, ByVal x0 As Double, ByVal y1 As Double, ByVal f As Double) As String
+    Dim p() As String, q() As String, i As Long, s As String
+    p = Split(pts, ";")
+    For i = 0 To UBound(p)
+        If Len(p(i)) > 0 Then
+            q = Split(p(i), " ")
+            s = s & NumTxt(Round((Val(q(0)) - x0) / f, 2)) & " " & NumTxt(Round((y1 - Val(q(1))) / f, 2)) & ";"
+        End If
+    Next i
+    Normalizar = s
+End Function
+
+Private Function NumTxt(ByVal x As Double) As String
+    ' número como texto con punto decimal (Val lo lee igual en cualquier idioma)
+    NumTxt = Replace(CStr(x), ",", ".")
+End Function
+
+Private Sub Centro(ByVal pts As String, ByRef cx As Double, ByRef cy As Double)
+    Dim p() As String, q() As String, i As Long, n As Long
+    cx = 0: cy = 0
+    p = Split(pts, ";")
+    For i = 0 To UBound(p)
+        If Len(p(i)) > 0 Then
+            q = Split(p(i), " ")
+            cx = cx + Val(q(0)): cy = cy + Val(q(1)): n = n + 1
+        End If
+    Next i
+    If n > 0 Then
+        cx = cx / n
+        cy = cy / n
+    End If
+End Sub
+
+Private Function DentroDe(ByVal x As Double, ByVal y As Double, ByVal pts As String) As Boolean
+    ' punto en polígono (rayo horizontal)
+    Dim p() As String, a() As String, b() As String, i As Long, j As Long, n As Long
+    Dim xi As Double, yi As Double, xj As Double, yj As Double
+    p = Split(pts, ";")
+    n = UBound(p)
+    If Len(p(n)) = 0 Then n = n - 1
+    j = n
+    For i = 0 To n
+        a = Split(p(i), " "): b = Split(p(j), " ")
+        xi = Val(a(0)): yi = Val(a(1)): xj = Val(b(0)): yj = Val(b(1))
+        If ((yi > y) <> (yj > y)) Then
+            If x < (xj - xi) * (y - yi) / (yj - yi) + xi Then DentroDe = Not DentroDe
+        End If
+        j = i
+    Next i
+End Function
+
+Public Sub DibujarMapas()
+    ' dibuja las figuras de la hoja Geometria en los dos mapas del Panel (borra las anteriores)
+    Dim i As Long, sh As Shape, nombre As String, mapa As String, ultima As Long, k As Long
+    Dim maxX As Double, maxY As Double, p() As String, q() As String, esc As Double
+    Dim caja As Range, x0 As Double, y0 As Double, m As Long, ff As FreeformBuilder, texto As String
+    For k = Panel.Shapes.Count To 1 Step -1
+        nombre = Panel.Shapes(k).Name
+        If Left$(nombre, 2) = "I_" Or Left$(nombre, 2) = "E_" Or Left$(nombre, 3) = "OI_" Or Left$(nombre, 3) = "OE_" Then
+            Panel.Shapes(k).Delete
+        End If
+    Next k
+    ultima = Geometria.Cells(Geometria.Rows.Count, 1).End(xlUp).Row
+    For i = 4 To ultima
+        p = Split(CStr(Geometria.Cells(i, 6).Value), ";")
+        For k = 0 To UBound(p)
+            If Len(p(k)) > 0 Then
+                q = Split(p(k), " ")
+                If Val(q(0)) > maxX Then maxX = Val(q(0))
+                If Val(q(1)) > maxY Then maxY = Val(q(1))
+            End If
+        Next k
+    Next i
+    If maxX = 0 Or maxY = 0 Then Exit Sub
+    Application.ScreenUpdating = False
+    For i = 4 To ultima
+        mapa = CStr(Geometria.Cells(i, 2).Value)
+        For m = 1 To 2
+            If (mapa = "I" And m = 1) Or (mapa = "E" And m = 2) Or mapa = "O" Then
+                Set caja = Panel.Range(IIf(m = 1, "CajaMapa1", "CajaMapa2"))
+                esc = caja.Width / maxX
+                If caja.Height / maxY < esc Then esc = caja.Height / maxY
+                x0 = caja.Left + (caja.Width - maxX * esc) / 2
+                y0 = caja.Top
+                p = Split(CStr(Geometria.Cells(i, 6).Value), ";")
+                q = Split(p(0), " ")
+                Set ff = Panel.Shapes.BuildFreeform(msoEditingAuto, x0 + Val(q(0)) * esc, y0 + Val(q(1)) * esc)
+                For k = 1 To UBound(p)
+                    If Len(p(k)) > 0 Then
+                        q = Split(p(k), " ")
+                        ff.AddNodes msoSegmentLine, msoEditingAuto, x0 + Val(q(0)) * esc, y0 + Val(q(1)) * esc
+                    End If
+                Next k
+                q = Split(p(0), " ")
+                ff.AddNodes msoSegmentLine, msoEditingAuto, x0 + Val(q(0)) * esc, y0 + Val(q(1)) * esc
+                Set sh = ff.ConvertToShape
+                nombre = CStr(Geometria.Cells(i, 1).Value)
+                If mapa = "O" Then nombre = IIf(m = 1, "OI_", "OE_") & Mid$(nombre, 4)
+                sh.Name = nombre
+                sh.Line.ForeColor.RGB = RGB(255, 255, 255)
+                sh.Line.Weight = 0.75
+                If mapa = "O" Then
+                    sh.Fill.ForeColor.RGB = RGB(230, 233, 230)
+                    texto = CStr(Geometria.Cells(i, 5).Value)
+                Else
+                    sh.Fill.ForeColor.RGB = RGB(207, 214, 209)
+                    sh.OnAction = "ClicMapa"
+                    texto = ""
+                    If mapa = "I" Or Geometria.Cells(i, 4).Value = "living" Or Geometria.Cells(i, 4).Value = "unica" Then
+                        texto = CStr(Geometria.Cells(i, 3).Value)
+                    End If
+                End If
+                If Len(texto) > 0 Then
+                    With sh.TextFrame
+                        .Characters.Text = texto
+                        .Characters.Font.Size = 7
+                        .Characters.Font.Bold = True
+                        .HorizontalAlignment = xlHAlignCenter
+                        .VerticalAlignment = xlVAlignCenter
+                        .MarginLeft = 0: .MarginRight = 0: .MarginTop = 0: .MarginBottom = 0
+                    End With
+                End If
+            End If
+        Next m
+    Next i
+    Application.ScreenUpdating = True
+    ColorearMapas
 End Sub
 
 ' ------------------------------------------------------------ utilidades
@@ -360,20 +699,6 @@ Private Function Existe(col As Collection, ByVal clave As String) As Boolean
 NoEsta:
     Existe = False
 End Function
-
-Private Sub CalculoManual(ByVal manual As Boolean)
-    On Error Resume Next
-    If manual Then
-        Application.Calculation = xlCalculationManual
-    Else
-        Application.Calculation = xlCalculationAutomatic
-    End If
-End Sub
-
-Private Sub Recalcular()
-    On Error Resume Next
-    Application.CalculateFull
-End Sub
 
 Private Function SerieFecha(ByVal v As Variant) As Long
     ' número de serie de una fecha de celda (0 si no es fecha)
@@ -417,7 +742,10 @@ Private Function LeerTexto(ByVal ruta As String) As String
     f = FreeFile
     Open ruta For Binary Access Read As #f
     n = LOF(f)
-    If n = 0 Then Close #f: Exit Function
+    If n = 0 Then
+        Close #f
+        Exit Function
+    End If
     ReDim b(0 To n - 1)
     Get #f, , b
     Close #f

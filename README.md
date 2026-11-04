@@ -51,20 +51,21 @@ Se cargan sobre lo anterior en el orden indicado en ese documento.
 
 ## Versión Excel con macros (sin internet)
 
-[`data/excel/Seguimiento_Loma_La_Cruz.xlsm`](data/excel/Seguimiento_Loma_La_Cruz.xlsm) reproduce la página en un solo
-archivo de Excel (Windows o Mac, Excel 2010 o posterior):
+[`data/excel/Seguimiento_Loma_La_Cruz.xlsm`](data/excel/Seguimiento_Loma_La_Cruz.xlsm) (≈120 KB) reproduce la página en
+un archivo de Excel (Windows o Mac, Excel 2013 o posterior):
 
 | Hoja | Contenido |
 |---|---|
-| **Panel** | Día a ver (◀ / Hoy / ▶) y vista Día o Semana; camiones del período vs. el anterior; avance, extra, sitios entregados y cumplimiento Gantt; **mapa de intervención** y **mapa de entregas** (celdas pintadas con formato condicional; clic en un sitio = detalle); gráfico de m³ por día o semana |
-| Ficha sitio · Programa · Sitios | Detalle de un sitio con sus notas · carta Gantt dibujada (verde entregado, rojo atrasado) · tabla por sitio |
-| Movimiento · Camiones · Entregas · Gantt · Notas | **Datos** (hojas amarillas): se editan a mano o con los botones del Panel |
+| **Panel** | Día (◀ Hoy ▶) y vista Día/Semana; 6 indicadores; **mapa de intervención** y **mapa de entregas** dibujados con las figuras del plano (clic en un sitio = detalle y resaltado); gráficos (avance por sitio, estado, cumplimiento Gantt, m³ por día/semana) y referencias a las tablas dinámicas |
+| **Tablas dinámicas** | Camiones por día y por sitio, planillas por fecha, entregas por terraza (se actualizan al abrir y con ↻) |
+| Ficha sitio · Programa · Sitios | Detalle de un sitio con notas · carta Gantt dibujada · tabla por sitio |
+| Movimiento · Camiones · Entregas · Gantt · Notas | **Datos** en tablas de Excel (crecen solas); botones 📥 para importar el CSV de tickets y la planilla *Resumen x Terraza* |
+| Geometría | Figuras de los mapas; **📐 Plano DXF** lee un DXF con polilíneas cerradas (capas 1…48, Acceso, Living, Patio, Edificios y otras como calle o pasajes) y redibuja los mapas |
 
-Todo se calcula con fórmulas, así que funciona aunque las macros estén desactivadas. Las macros agregan los botones,
-el clic en los mapas, la importación del CSV de tickets (solo agrega tickets nuevos) y de la planilla
-*Resumen x Terraza* (pregunta la fecha y reemplaza los datos de esa fecha). El archivo se genera con
-`python scripts/excel/construir.py` (necesita `openpyxl`, `numpy` y `matplotlib`); el código VBA está en
-`scripts/excel/vba/` y `scripts/excel/vba_proyecto.py` escribe el proyecto VBA sin necesitar Excel.
+Todo se calcula con fórmulas; las macros recolorean los mapas (al abrir, al volver al Panel y al cambiar el día),
+responden al clic e importan datos y planos. Se genera con `python scripts/excel/construir.py` (necesita `openpyxl`
+y `matplotlib`): `vba_proyecto.py` escribe el proyecto VBA, `dibujo.py` las figuras y `tablas_dinamicas.py` las
+tablas dinámicas, sin necesitar Excel. El código VBA está en `scripts/excel/vba/`.
 
 ## Archivos que se cargan
 
