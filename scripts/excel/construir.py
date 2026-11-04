@@ -26,7 +26,6 @@ from openpyxl.worksheet.table import Table, TableFormula, TableStyleInfo
 
 sys.path.insert(0, str(Path(__file__).parent))
 import dibujo  # noqa: E402
-import tablas_dinamicas as TD  # noqa: E402
 import vba_proyecto  # noqa: E402
 import xlsm  # noqa: E402
 
@@ -603,17 +602,17 @@ g4.width, g4.height = cm(12 * 65 - 10), cm(16 * 20 - 10)
 pan.add_chart(g4, f'Q{13 + len(campos_sel) + 1}')
 
 # referencias a las tablas dinámicas
-unir(65, 2, 65, 28, '🔄 Desde las tablas dinámicas (se actualizan al abrir el archivo y con ↻ Actualizar)',
+unir(65, 2, 65, 28, '🔄 Totales y tablas dinámicas (se crean y actualizan al abrir el archivo y con ↻ Actualizar)',
      fuente(13, True), al='left')
 REFS = [
-    ('m³ a botadero según tickets (todos)', '=IFERROR(GETPIVOTDATA("Total m³",\'Tablas dinámicas\'!$B$4),0)', '#,##0',
+    ('m³ a botadero según tickets (todos)', '=SUM(tblCamiones[m³])', '#,##0',
      'Camiones por día', "'Tablas dinámicas'!B4"),
-    ('Viajes (válidos − anulados)', '=IFERROR(GETPIVOTDATA("Viajes",\'Tablas dinámicas\'!$B$4),0)', '#,##0',
+    ('Viajes (válidos − anulados)', '=SUM(tblCamiones[Viaje])', '#,##0',
      'Camiones por día', "'Tablas dinámicas'!B4"),
     ('m³ a botadero en planillas (todas las fechas)',
-     '=IFERROR(GETPIVOTDATA("Botadero m³",\'Tablas dinámicas\'!$K$4),0)', '#,##0', 'Planillas por fecha',
+     '=SUM(tblMovimiento[A botadero m³])', '#,##0', 'Planillas por fecha',
      "'Tablas dinámicas'!K4"),
-    ('Terrazas entregadas', '=IFERROR(GETPIVOTDATA("Terrazas",\'Tablas dinámicas\'!$Q$4,"Estado","Entregada"),0)', '0',
+    ('Terrazas entregadas', '=COUNTIF(tblEntregas[Estado],"Entregada")', '0',
      'Entregas por terraza', "'Tablas dinámicas'!Q4"),
 ]
 for j, t in zip((2, 9, 12), ('Indicador', 'Valor', 'Tabla dinámica')):
@@ -703,26 +702,8 @@ for c, t in (('B3', '🚚 Camiones por día'), ('G3', '📍 Camiones por sitio')
 for col, w in zip('ABCDEFGHIJKLMNOPQRSTUV', [2, 13, 11, 9, 11, 3, 10, 11, 9, 3, 13, 13, 11, 13, 3, 3, 16, 11, 11, 11,
                                              13, 3]):
     tdn.column_dimensions[col].width = w
-c_cam = TD.Cache('tblCamiones', CAB_CAM, CAM, {'Fecha': 'dd-mm-yyyy', 'Semana': 'dd-mm-yyyy'})
-c_mov = TD.Cache('tblMovimiento', CAB_MOV, MOV, {'Fecha': 'dd-mm-yyyy'})
-c_ent = TD.Cache('tblEntregas', CAB_ENT, ENT)
-PIVOTES = [
-    TD.TablaDinamica('tdCamionesDia', c_cam, 'Tablas dinámicas', 'B4', 'Fecha',
-                     [('m³', 'sum', 'Total m³', 3), ('Viaje', 'sum', 'Viajes', 1), ('Camión día', 'sum', 'Camiones', 1)]),
-    TD.TablaDinamica('tdCamionesSitio', c_cam, 'Tablas dinámicas', 'G4', 'Sitio',
-                     [('m³', 'sum', 'Total m³', 3), ('Viaje', 'sum', 'Viajes', 1)]),
-    TD.TablaDinamica('tdPlanillas', c_mov, 'Tablas dinámicas', 'K4', 'Fecha',
-                     [('A botadero m³', 'sum', 'Botadero m³', 3)], columnas='Tipo'),
-    TD.TablaDinamica('tdEntregas', c_ent, 'Tablas dinámicas', 'Q4', 'Terraza', [('Sitio', 'count', 'Terrazas', 1)],
-                     columnas='Estado'),
-]
-TD.escribir({'Tablas dinámicas': tdn}, PIVOTES)
-for r in range(5, 80):
-    for c in ('B', 'K'):
-        if isinstance(tdn[f'{c}{r}'].value, (date, datetime)):
-            tdn[f'{c}{r}'].number_format = 'dd-mm-yyyy'
-    for c in ('C', 'H', 'L', 'M', 'N'):
-        tdn[f'{c}{r}'].number_format = '#,##0'
+tdn['B5'] = 'Las tablas dinámicas se crean al abrir el archivo con macros habilitadas (o con ↻ Actualizar).'
+tdn['B5'].font = fuente(10, color=SUAVE, cursiva=True)
 
 # ---------------------------------------------------------------- Ficha sitio
 
@@ -873,7 +854,7 @@ t1, t2, t3 = (SALIDA.with_suffix(f'.tmp{i}.xlsx') for i in (1, 2, 3))
 wb.save(t1)
 hojas_xml = {ws.title: f'xl/worksheets/sheet{i}.xml' for i, ws in enumerate(wb.worksheets, 1)}
 dibujo.agregar(t1, hojas_xml['Panel'], figs, t2)
-TD.empaquetar(t2, t3, PIVOTES, {'Tablas dinámicas': hojas_xml['Tablas dinámicas']})
+t2.replace(t3)   # las tablas dinámicas no se escriben a mano: las crea Excel (macro CrearTablasDinamicas)
 vba = Path(__file__).parent / 'vba'
 
 
@@ -887,5 +868,5 @@ modulos += [(c, 'hoja', codigo(c)) for _, c in orden]
 modulos.append(('Botones', 'modulo', (vba / 'Botones.bas').read_text(encoding='utf-8')))
 xlsm.empaquetar(t3, SALIDA, vba_proyecto.proyecto(modulos))
 for t in (t1, t2, t3):
-    t.unlink()
+    t.unlink(missing_ok=True)
 print(SALIDA, f'{SALIDA.stat().st_size / 1024:.0f} KB')

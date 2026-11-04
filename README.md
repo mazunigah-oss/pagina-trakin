@@ -57,15 +57,16 @@ un archivo de Excel (Windows o Mac, Excel 2013 o posterior):
 | Hoja | Contenido |
 |---|---|
 | **Panel** | Día (◀ Hoy ▶) y vista Día/Semana; 6 indicadores; **mapa de intervención** y **mapa de entregas** dibujados con las figuras del plano (clic en un sitio = detalle y resaltado); gráficos (avance por sitio, estado, cumplimiento Gantt, m³ por día/semana) y referencias a las tablas dinámicas |
-| **Tablas dinámicas** | Camiones por día y por sitio, planillas por fecha, entregas por terraza (se actualizan al abrir y con ↻) |
+| **Tablas dinámicas** | Camiones por día y por sitio, planillas por fecha, entregas por terraza (las crea una macro al abrir; se actualizan con ↻) |
 | Ficha sitio · Programa · Sitios | Detalle de un sitio con notas · carta Gantt dibujada · tabla por sitio |
 | Movimiento · Camiones · Entregas · Gantt · Notas | **Datos** en tablas de Excel (crecen solas); botones 📥 para importar el CSV de tickets y la planilla *Resumen x Terraza* |
 | Geometría | Figuras de los mapas; **📐 Plano DXF** lee un DXF con polilíneas cerradas (capas 1…48, Acceso, Living, Patio, Edificios y otras como calle o pasajes) y redibuja los mapas |
 
 Todo se calcula con fórmulas; las macros recolorean los mapas (al abrir, al volver al Panel y al cambiar el día),
 responden al clic e importan datos y planos. Se genera con `python scripts/excel/construir.py` (necesita `openpyxl`
-y `matplotlib`): `vba_proyecto.py` escribe el proyecto VBA, `dibujo.py` las figuras y `tablas_dinamicas.py` las
-tablas dinámicas, sin necesitar Excel. El código VBA está en `scripts/excel/vba/`.
+y `matplotlib`): `vba_proyecto.py` escribe el proyecto VBA y `dibujo.py` las figuras, sin necesitar Excel; las tablas dinámicas
+las crea Excel al abrir (macro `CrearTablasDinamicas`). Si Excel avisa que reparó el archivo, ver
+[`docs/PROMPT_REPARAR_EXCEL.md`](docs/PROMPT_REPARAR_EXCEL.md). El código VBA está en `scripts/excel/vba/`.
 
 ## Archivos que se cargan
 

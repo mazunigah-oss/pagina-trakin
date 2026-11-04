@@ -29,9 +29,50 @@ Public Sub IrHoy()
     ColorearMapas
 End Sub
 
+Public Sub CrearTablasDinamicas()
+    ' crea las 4 tablas dinámicas con la API de Excel (desde las tablas tblCamiones, tblMovimiento y tblEntregas)
+    Dim ws As Worksheet, pt As PivotTable
+    Set ws = TablasDin
+    On Error Resume Next
+    For Each pt In ws.PivotTables
+        pt.TableRange2.Clear
+    Next pt
+    ws.Range("B4:Z1000").Clear
+    On Error GoTo 0
+    Set pt = NuevaTD(ws, "tblCamiones", "B4", "tdCamionesDia", "Fecha")
+    pt.AddDataField pt.PivotFields("m³"), "Total m³", xlSum
+    pt.AddDataField pt.PivotFields("Viaje"), "Viajes", xlSum
+    pt.AddDataField pt.PivotFields("Camión día"), "Camiones", xlSum
+    Set pt = NuevaTD(ws, "tblCamiones", "G4", "tdCamionesSitio", "Sitio")
+    pt.AddDataField pt.PivotFields("m³"), "Total m³ ", xlSum
+    pt.AddDataField pt.PivotFields("Viaje"), "Viajes ", xlSum
+    Set pt = NuevaTD(ws, "tblMovimiento", "K4", "tdPlanillas", "Fecha")
+    pt.PivotFields("Tipo").Orientation = xlColumnField
+    pt.AddDataField pt.PivotFields("A botadero m³"), "Botadero m³", xlSum
+    Set pt = NuevaTD(ws, "tblEntregas", "Q4", "tdEntregas", "Terraza")
+    pt.PivotFields("Estado").Orientation = xlColumnField
+    pt.AddDataField pt.PivotFields("Sitio"), "Terrazas", xlCount
+End Sub
+
+Private Function NuevaTD(ByVal ws As Worksheet, ByVal origen As String, ByVal celda As String, _
+                         ByVal nombre As String, ByVal filas As String) As PivotTable
+    Dim pc As PivotCache
+    Set pc = ThisWorkbook.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=origen)
+    Set NuevaTD = pc.CreatePivotTable(TableDestination:=ws.Range(celda), TableName:=nombre)
+    With NuevaTD.PivotFields(filas)
+        .Orientation = xlRowField
+        .Position = 1
+    End With
+    On Error Resume Next
+    NuevaTD.PivotFields(filas).DataRange.Cells(1, 1).Ungroup   ' Excel agrupa fechas por mes: se deja por día
+    NuevaTD.RowAxisLayout xlTabularRow
+    On Error GoTo 0
+End Function
+
 Public Sub Actualizar()
     ' tablas dinámicas + fórmulas + colores de los mapas
     On Error Resume Next
+    If TablasDin.PivotTables.Count = 0 Then CrearTablasDinamicas
     ThisWorkbook.RefreshAll
     Application.CalculateFull
     On Error GoTo 0
