@@ -49,6 +49,23 @@ camino), los tickets del 19/10 y las terrazas entregadas (solo acceso y living),
 [`avance_al_19-10-2026.md`](data/carga_2026-10-19/avance_al_19-10-2026.md) que explica los supuestos.
 Se cargan sobre lo anterior en el orden indicado en ese documento.
 
+## Versión Excel con macros (sin internet)
+
+[`data/excel/Seguimiento_Loma_La_Cruz.xlsm`](data/excel/Seguimiento_Loma_La_Cruz.xlsm) reproduce la página en un solo
+archivo de Excel (Windows o Mac, Excel 2010 o posterior):
+
+| Hoja | Contenido |
+|---|---|
+| **Panel** | Día a ver (◀ / Hoy / ▶) y vista Día o Semana; camiones del período vs. el anterior; avance, extra, sitios entregados y cumplimiento Gantt; **mapa de intervención** y **mapa de entregas** (celdas pintadas con formato condicional; clic en un sitio = detalle); gráfico de m³ por día o semana |
+| Ficha sitio · Programa · Sitios | Detalle de un sitio con sus notas · carta Gantt dibujada (verde entregado, rojo atrasado) · tabla por sitio |
+| Movimiento · Camiones · Entregas · Gantt · Notas | **Datos** (hojas amarillas): se editan a mano o con los botones del Panel |
+
+Todo se calcula con fórmulas, así que funciona aunque las macros estén desactivadas. Las macros agregan los botones,
+el clic en los mapas, la importación del CSV de tickets (solo agrega tickets nuevos) y de la planilla
+*Resumen x Terraza* (pregunta la fecha y reemplaza los datos de esa fecha). El archivo se genera con
+`python scripts/excel/construir.py` (necesita `openpyxl`, `numpy` y `matplotlib`); el código VBA está en
+`scripts/excel/vba/` y `scripts/excel/vba_proyecto.py` escribe el proyecto VBA sin necesitar Excel.
+
 ## Archivos que se cargan
 
 En **Cargar datos** (Excel o CSV; se revisa antes de guardar y se puede deshacer desde el historial):
